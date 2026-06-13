@@ -1,0 +1,17 @@
+---------------------------------------------------------------------------------------------------
+Version: 0.1.6
+Date: 2026-06-13
+  Features:
+    - Smart Train Combinator (2x2 main) + Freight Bay Probe (1x2): one probe per wagon, all wired
+      by cable. The main reads each probe's buffer network in isolation and calls a train only when
+      every wagon's dedicated buffer is individually ready (MIN over wagons of floor(buffer / wagon
+      capacity)), clamped to a configurable Max trains.
+    - Works for both cargo (items, any quality) and fluids; wagon capacity read from the chosen
+      rolling-stock prototype, so modded wagons are supported.
+    - Drives the train stop: train-limit signal (default signal-L) and optional priority signal
+      (default signal-P) with a High/Important/Medium/Low level scaled by station fill.
+    - Auto-naming: builds the stop name from the tracked good, a green (load) / red (unload) arrow
+      and one icon per wagon, with a live preview.
+    - Three windows (base config / train-stop config / per-wagon buffer monitor), blueprint +
+      copy-paste + parametrization support, English and French locale.
+    - Nullius and Ultracube compatibility.
