@@ -82,6 +82,7 @@ local function ensure_storage()
   storage.guis  = storage.guis  or {}  -- player_index -> main unit_number (base window open)
   storage.monitor_pref = storage.monitor_pref or {}  -- player_index -> bool: show monitor window
   storage.stopcfg_pref = storage.stopcfg_pref or {}  -- player_index -> bool: show stop-config window
+  storage.win_loc = storage.win_loc or {}  -- player_index -> { [window_name] = {x,y} }: remembered positions
 end
 
 local function default_state(entity)
@@ -549,6 +550,34 @@ local function park_beside(player, win, dx)
   end
 end
 
+-- Place a secondary window: restore its last position if the player has moved it
+-- before, else park it beside the base. Restoring (instead of re-parking against
+-- a base that was just recreated this event, whose layout/center isn't finalized
+-- yet) keeps the window from jumping on the next open. The remembered position is
+-- clamped to the screen so a resolution change can't strand it off-view.
+-- base_fresh = the base window was (re)created in this same event, so its
+-- .location isn't laid out yet and reading it (park_beside) would misplace us.
+local function place_window(player, win, name, dx, base_fresh)
+  local locs = storage.win_loc[player.index] or {}
+  local loc  = locs[name]
+  if loc then
+    local res = player.display_resolution
+    local x = math.max(0, math.min(loc.x, res.width  - 48))
+    local y = math.max(0, math.min(loc.y, res.height - 48))
+    win.location = { x = x, y = y }
+  elseif base_fresh then
+    -- No remembered position yet and the base just spawned this event: don't read
+    -- its stale location. Center safely; a later toggle/drag records a real spot.
+    win.force_auto_center()
+  else
+    -- Toggled while the base is already on screen and laid out: park beside it and
+    -- remember the result, so subsequent opens restore it instead of re-parking.
+    park_beside(player, win, dx)
+    locs[name] = { x = win.location.x, y = win.location.y }
+    storage.win_loc[player.index] = locs
+  end
+end
+
 local function destroy_win(player, name)
   local w = player.gui.screen[name]
   if w and w.valid then w.destroy() end
@@ -612,9 +641,15 @@ local function build_base_gui(player, state)
   local is_fluid  = (state.kind == KIND.FLUID)
   good_flow[ITEMBTN].visible  = not is_fluid
   good_flow[FLUIDBTN].visible = is_fluid
-  good_flow[ITEMBTN].elem_value  = (not is_fluid and state.icon) and { name = state.icon, quality = state.icon_quality or "normal" } or nil
-  good_flow[FLUIDBTN].elem_value = (is_fluid and state.icon) or nil
-  content[CONFIG][WAGON].elem_value  = state.wagon_type and { name = state.wagon_type, quality = state.wagon_quality or "normal" } or nil
+  -- Guard against a tracked good / wagon whose prototype no longer exists (mod
+  -- removed or disabled, e.g. nullius dropped on a version bump): assigning an
+  -- unknown name to elem_value raises a non-recoverable "Unknown item name".
+  local item_ok  = (not is_fluid) and state.icon and prototypes.item[state.icon] ~= nil
+  local fluid_ok = is_fluid and state.icon and prototypes.fluid[state.icon] ~= nil
+  local wagon_ok = state.wagon_type and prototypes.entity[state.wagon_type] ~= nil
+  good_flow[ITEMBTN].elem_value  = item_ok  and { name = state.icon, quality = state.icon_quality or "normal" } or nil
+  good_flow[FLUIDBTN].elem_value = fluid_ok and state.icon or nil
+  content[CONFIG][WAGON].elem_value  = wagon_ok and { name = state.wagon_type, quality = state.wagon_quality or "normal" } or nil
   content["stc2-preview"].entity     = state.entity
   window.force_auto_center()
   player.opened = window
@@ -622,7 +657,7 @@ end
 
 -- WINDOW 2 - Train-stop config: auto-naming, train-limit signal (L), priority
 -- level + priority signal (P). Free-floating; parked left of the base window.
-local function build_stop_gui(player, state)
+local function build_stop_gui(player, state, base_fresh)
   destroy_win(player, STOPCFG)
 
   flib_gui.add(player.gui.screen, {
@@ -682,12 +717,12 @@ local function build_stop_gui(player, state)
   local drive = player.gui.screen[STOPCFG]["stc2-stop-body"]["stc2-stop-flow"]["stc2-drive-frame"]["stc2-drive-flow"]
   drive["stc2-limit-tbl"][OUTPUT].elem_value = state.output_signal
   drive["stc2-prio-tbl"][SIGP].elem_value    = state.priority_output_signal
-  park_beside(player, player.gui.screen[STOPCFG], -380)
+  place_window(player, player.gui.screen[STOPCFG], STOPCFG, -380, base_fresh)
 end
 
 -- WINDOW 3 - Monitor: the per-wagon buffer readout. Free-floating; parked right
 -- of the base window. Toggled via the titlebar button.
-local function build_monitor_gui(player, state)
+local function build_monitor_gui(player, state, base_fresh)
   destroy_win(player, MONITOR)
 
   flib_gui.add(player.gui.screen, {
@@ -714,7 +749,7 @@ local function build_monitor_gui(player, state)
     },
   })
 
-  park_beside(player, player.gui.screen[MONITOR], 380)
+  place_window(player, player.gui.screen[MONITOR], MONITOR, 380, base_fresh)
 end
 
 -- ===========================================================================
@@ -758,8 +793,8 @@ script.on_event(defines.events.on_gui_opened, function(event)
   storage.guis[player.index] = e.unit_number
   build_base_gui(player, state)
   -- Secondary windows are opt-in and remembered per player (default: closed).
-  if storage.stopcfg_pref[player.index] then build_stop_gui(player, state) end
-  if storage.monitor_pref[player.index] then build_monitor_gui(player, state) end
+  if storage.stopcfg_pref[player.index] then build_stop_gui(player, state, true) end
+  if storage.monitor_pref[player.index] then build_monitor_gui(player, state, true) end
   refresh_and_update(player, state)
 end)
 
@@ -770,6 +805,18 @@ script.on_event(defines.events.on_gui_closed, function(event)
   if not (event.element and event.element.valid and event.element.name == WINDOW) then return end
   local player = game.get_player(event.player_index)
   if player then close_gui(player) end
+end)
+
+-- Remember where the player drags the secondary windows, so they reopen in place
+-- instead of jumping back to a default spot.
+script.on_event(defines.events.on_gui_location_changed, function(event)
+  local el = event.element
+  if not (el and el.valid) then return end
+  if el.name ~= STOPCFG and el.name ~= MONITOR then return end
+  ensure_storage()
+  local locs = storage.win_loc[event.player_index] or {}
+  locs[el.name] = { x = el.location.x, y = el.location.y }
+  storage.win_loc[event.player_index] = locs
 end)
 
 script.on_event(defines.events.on_gui_click, function(event)

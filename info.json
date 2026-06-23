@@ -1,13 +1,13 @@
 {
   "name": "smart-train-combinator",
-  "version": "0.1.6",
+  "version": "0.2.0",
   "title": "Smart Train Combinator",
   "author": "kardagan",
   "description": "A train-stop combinator that validates each train's dedicated buffer individually, instead of pooling all station storage together. One main unit wires to the station; empty 'buffer probe' shells each wire to a single train slot's chests. The main reads every probe's network independently and calls a train only when that slot's buffer is actually ready. Inspired by Simple Train Combinator by Odja_Anarchist.",
-  "factorio_version": "2.0",
+  "factorio_version": "2.1",
   "dependencies": [
-    "base >= 2.0.0",
-    "flib >= 0.16.5",
+    "base >= 2.1.0",
+    "flib >= 0.17.0",
     "(?) Ultracube",
     "(?) nullius"
   ]

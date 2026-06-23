@@ -1,4 +1,19 @@
 ---------------------------------------------------------------------------------------------------
+Version: 0.2.0
+Date: 2026-06-23
+  Changes:
+    - Compatibility with Factorio 2.1: bumped factorio_version to 2.1, base dependency to
+      >= 2.1.0 and flib dependency to >= 0.17.0 (the 2.1-compatible flib release). No gameplay
+      changes. The 2.0 release (0.1.6) remains available on the mod portal for players still on
+      Factorio 2.0.
+  Bugfixes:
+    - Opening the main unit no longer crashes ("Unknown item name") when the tracked good or
+      wagon prototype no longer exists (e.g. a mod such as nullius was removed or is not yet
+      ported to the running game version). The choose-elem buttons now fall back to empty.
+    - The buffer monitor and train-stop config windows no longer jump to a random spot when
+      reopening the main unit while they were left open: their position is now remembered (and
+      restored on the next open) instead of being recomputed against a not-yet-laid-out base.
+---------------------------------------------------------------------------------------------------
 Version: 0.1.6
 Date: 2026-06-13
   Features:
