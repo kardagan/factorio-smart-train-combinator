@@ -1,6 +1,6 @@
 # Smart Train Combinator
 
-A Factorio 2.0 mod. A train-stop combinator that validates **each wagon's dedicated buffer
+A Factorio 2.1 mod (also available for 2.0). A train-stop combinator that validates **each wagon's dedicated buffer
 individually** before calling a train — instead of pooling all of a station's storage together.
 
 ## Why
