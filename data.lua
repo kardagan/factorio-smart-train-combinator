@@ -61,6 +61,25 @@ main.icon, main.icon_size = nil, nil
 main.icons = { { icon = MAIN_SPRITE, icon_size = 256 } }
 
 -- ---------------------------------------------------------------------------
+-- MULTI entity: the multi-resource variant ("aiguilleur" / FIFO dispatcher).
+-- Same constant-combinator base and 2x2 footprint as MAIN, distinct prototype
+-- and cyan art so players tell them apart on the toolbar. Same runtime control
+-- file handles both; the variant is keyed off the entity name.
+-- ---------------------------------------------------------------------------
+local MULTI        = "stc-multi"
+local MULTI_SPRITE = "__smart-train-combinator__/graphics/main-multi-2x2.png"
+
+local multi = table.deepcopy(main)
+multi.name           = MULTI
+multi.minable.result = MULTI
+local function multi_dir_sprite()
+  return { filename = MULTI_SPRITE, width = 256, height = 256, scale = 0.3, shift = { 0, 0 } }
+end
+multi.sprites = { north = multi_dir_sprite(), east = multi_dir_sprite(), south = multi_dir_sprite(), west = multi_dir_sprite() }
+multi.icon, multi.icon_size = nil, nil
+multi.icons = { { icon = MULTI_SPRITE, icon_size = 256 } }
+
+-- ---------------------------------------------------------------------------
 -- PROBE entity ("Wagon Module"): arithmetic-combinator clone (kept 1x2 + its
 -- input/output connectors) with custom art. Empty shell: never configured, so
 -- it outputs nothing on its own.
@@ -100,6 +119,7 @@ end
 
 data:extend({
   main,
+  multi,
   probe,
 
   -- Items
@@ -110,6 +130,15 @@ data:extend({
     subgroup     = "circuit-network",
     order        = "c[combinators]-e[smart-train-combinator]-a[main]",
     place_result = MAIN,
+    stack_size   = 50,
+  },
+  {
+    type         = "item",
+    name         = MULTI,
+    icons        = { { icon = MULTI_SPRITE, icon_size = 256 } },
+    subgroup     = "circuit-network",
+    order        = "c[combinators]-e[smart-train-combinator]-am[multi]",
+    place_result = MULTI,
     stack_size   = 50,
   },
   {
@@ -133,6 +162,17 @@ data:extend({
       { type = "item", name = "electronic-circuit",  amount = 2 },
     },
     results = { { type = "item", name = MAIN, amount = 1 } },
+  },
+  {
+    type        = "recipe",
+    name        = MULTI,
+    enabled     = false,
+    ingredients = {
+      { type = "item", name = "constant-combinator", amount = 1 },
+      { type = "item", name = "rail-signal",         amount = 2 },
+      { type = "item", name = "electronic-circuit",  amount = 4 },
+    },
+    results = { { type = "item", name = MULTI, amount = 1 } },
   },
   {
     type        = "recipe",
@@ -163,6 +203,7 @@ data:extend({
     },
     effects = {
       { type = "unlock-recipe", recipe = MAIN },
+      { type = "unlock-recipe", recipe = MULTI },
       { type = "unlock-recipe", recipe = PROBE },
     },
   },
@@ -193,6 +234,11 @@ data:extend({
     icon = "__smart-train-combinator__/graphics/arrow-unload.png", icon_size = 64,
     subgroup = "stc2-signals", order = "b",
   },
+  {
+    type = "virtual-signal", name = "stc2-storage",
+    icon = "__smart-train-combinator__/graphics/storage-icon.png", icon_size = 64,
+    subgroup = "stc2-signals", order = "c",
+  },
 })
 
 -- ---------------------------------------------------------------------------
@@ -217,6 +263,7 @@ if mods["nullius"] then
   end
 
   local main_recipe  = nullius_recipe(MAIN)
+  local multi_recipe = nullius_recipe(MULTI)
   local probe_recipe = nullius_recipe(PROBE)
 
   local tech = data.raw.technology[MAIN]
@@ -236,6 +283,7 @@ if mods["nullius"] then
   tech.ignore_tech_cost_multiplier = true
   tech.effects = {
     { type = "unlock-recipe", recipe = main_recipe },
+    { type = "unlock-recipe", recipe = multi_recipe },
     { type = "unlock-recipe", recipe = probe_recipe },
   }
   tech.name = "nullius-" .. MAIN

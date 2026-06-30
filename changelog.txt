@@ -1,4 +1,23 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.0
+Date: 2026-06-29
+  Features:
+    - New entity "Smart Train Combinator (Multi-Resource)": a FIFO dispatcher that tracks up to 10
+      goods and renames the train stop to request one resource at a time. It commits to a request
+      until a train arrives at the stop, then moves to the next (rename-on-arrival, so no duplicate
+      train is summoned). The shared buffer is split evenly across the chosen goods (each gets a
+      1/N slice, equal stacks). Auto-naming is mandatory and the train limit is 0 or 1.
+    - Enable gate on both modules ("request trains only if condition"): pick a signal, a comparator
+      and a constant or a second signal; while the condition is false the module requests 0 trains
+      (the stop itself stays active).
+    - Storage option on the single module: adds a warehouse icon to the auto-name to mark both the
+      evacuation source (loading) and the storage depot (unloading), so they are easy to tell apart.
+      No change to the train-calling logic - it is a naming marker only.
+  Changes:
+    - Versioning now mirrors the targeted game: the Factorio 2.0 build is x.y.z and the Factorio 2.1
+      build is x.y.(z+1), from a single shared codebase. The 2.0 build also carries the fixes that
+      previously shipped only in the 2.1 (0.2.0) release.
+---------------------------------------------------------------------------------------------------
 Version: 0.2.0
 Date: 2026-06-23
   Changes:
