@@ -18,6 +18,7 @@ local flib_gui = require("__flib__.gui")
 local MAIN  = "smart-train-combinator"
 local MULTI = "stc-multi"
 local PROBE = "stc2-buffer-probe"
+local TYPED = "stc-typed-probe"  -- resource-pinned probe (multi "independent buffer" mode)
 
 local MAX_GOODS = 10  -- multi-resource module: max simultaneously tracked goods
 
@@ -62,6 +63,11 @@ local MON_CLOSE  = "stc2-mon-close"
 local NET_TOGGLE = "stc2-net-toggle"
 local NET_CLOSE  = "stc2-net-close"
 local NET_CONN   = "stc2-net-conn"  -- "Connecté à : N" label
+-- typed-probe window (pin a resource to a probe)
+local TYPEDWIN    = "stc2-typed-win"
+local TYPED_ELEM  = "stc2-typed-elem"   -- item picker
+local TYPED_FLUID = "stc2-typed-fluid"  -- fluid picker (mutually exclusive with item)
+local TYPED_CLOSE = "stc2-typed-close"
 local CONTENT  = "stc2-content"
 local STATUS   = "stc2-status"
 local ST_ICON  = "stc2-status-icon"
@@ -91,6 +97,7 @@ local TRAINS   = "stc2-trains"
 local GOODS_FRAME = "stc2-goods-frame"
 local GOODS_TABLE = "stc2-goods-table"
 local GOOD_BTN    = "stc2-good-"     -- + index 1..MAX_GOODS
+local GOODS_HINT  = "stc2-goods-hint"  -- shown in typed mode: "defined by typed probes"
 -- enable gate (stop-config window)
 local GATE_CHK   = "stc2-gate-chk"
 local GATE_SIG   = "stc2-gate-sig"
@@ -117,6 +124,8 @@ local function ensure_storage()
   storage.monitor_pref = storage.monitor_pref or {}  -- player_index -> bool: show monitor window
   storage.stopcfg_pref = storage.stopcfg_pref or {}  -- player_index -> bool: show stop-config window
   storage.netcfg_pref  = storage.netcfg_pref  or {}  -- player_index -> bool: show circuit-condition window
+  storage.typed      = storage.typed      or {}  -- typed-probe unit_number -> { name, quality } (pinned resource)
+  storage.typed_guis = storage.typed_guis or {}  -- player_index -> typed-probe unit_number (its window open)
   storage.win_loc = storage.win_loc or {}  -- player_index -> { [window_name] = {x,y} }: remembered positions
 end
 
@@ -265,16 +274,19 @@ local function walk_network(entity, connector_ids)
 end
 
 local function discover(state)
-  local probes, stops = {}, {}
+  local probes, typed, stops = {}, {}, {}
   for _, e in pairs(walk_network(state.entity, LEASH_CONNECTORS)) do
     if e.name == PROBE then
       table.insert(probes, e)
+    elseif e.name == TYPED then
+      table.insert(typed, e)
     elseif e.type == "train-stop" then
       table.insert(stops, e)  -- support several stops wired to one main
     end
   end
-  state.probes = probes
-  state.stops  = stops
+  state.probes       = probes
+  state.typed_probes = typed
+  state.stops        = stops
 end
 
 -- ===========================================================================
@@ -403,12 +415,15 @@ local function evaluate(state)
 end
 
 -- === Multi-resource evaluation =============================================
--- For every tracked good, compute per-wagon loads and whether a full train of
--- that good is ready. Capacity per wagon is split ÷M (shared buffer). We cache
--- each probe's buffer units once (one BFS per probe, not per good).
+-- For every tracked good, per wagon: LOAD -> ship once a FULL wagon of the good
+-- has accumulated; UNLOAD -> request once there's room for a FULL wagon. A train
+-- is mono-resource so the unit is a whole wagon (no ÷M - that under-filled/over-
+-- called trains). Because the buffer is SHARED, "free room" is the bay's real
+-- free SLOTS (all goods counted), not (this-good-capacity - this-good-stored).
 local function evaluate_multi(state)
-  local goods = state.goods or {}
-  local m = #goods
+  local goods   = state.goods or {}
+  local m       = #goods
+  local is_item = (state.kind == KIND.ITEM)
 
   local probe_units = {}
   for _, probe in pairs(state.probes) do
@@ -418,27 +433,42 @@ local function evaluate_multi(state)
   end
   local nprobes = #probe_units
 
+  -- Per bay: each good's stored amount (read once) + the real free slot count
+  -- (items) after ALL goods are accounted for.
+  local bay_stored, bay_free = {}, {}
+  for wi, pu in ipairs(probe_units) do
+    bay_stored[wi] = {}
+    local occupied = 0
+    for gi, g in ipairs(goods) do
+      local s = probe_stored(state, pu.probe, g.name)
+      bay_stored[wi][gi] = s
+      if is_item then
+        local it = prototypes.item[g.name]
+        if it and it.stack_size > 0 then occupied = occupied + math.ceil(s / it.stack_size) end
+      end
+    end
+    bay_free[wi] = math.max(0, pu.units - occupied)
+  end
+
   local per_good = {}
   for gi, g in ipairs(goods) do
     local icon = g.name
-    local cap  = per_wagon_capacity_for(state, icon, m)
-    local item = (state.kind == KIND.ITEM) and icon and prototypes.item[icon] or nil
+    local cap  = per_wagon_capacity_for(state, icon, 1)  -- a full wagon of this good
+    local item = is_item and prototypes.item[icon] or nil
+    local wagon_slots = (item and cap and item.stack_size > 0) and (cap / item.stack_size) or nil
     local rows, min_loads = {}, nil
     local stored_total, cap_total = 0, 0
     for wi, pu in ipairs(probe_units) do
-      local stored   = probe_stored(state, pu.probe, icon)
+      local stored   = bay_stored[wi][gi]
       local capacity = (state.kind == KIND.FLUID) and pu.units or (item and pu.units * item.stack_size or 0)
-      -- Each good owns a 1/M slice of the shared buffer ("autant de fer que de
-      -- charbon"). LOAD: ship g once a slice-unit has accumulated. UNLOAD:
-      -- request g once its slice has a slice-unit of room free. (cap is the ÷M
-      -- per-wagon unit.)
-      local share = (m > 1) and (capacity / m) or capacity
       local loads = 0
       if cap and cap > 0 then
         if state.direction == DIRECTION.LOAD then
           loads = math.floor(stored / cap)
+        elseif is_item and wagon_slots then
+          loads = math.floor(bay_free[wi] / wagon_slots)  -- room for N full wagons (shared slots)
         else
-          loads = math.floor((share - stored) / cap)
+          loads = math.floor((capacity - stored) / cap)   -- fluids: own tank, not shared
         end
         if loads < 0 then loads = 0 end
       end
@@ -455,6 +485,67 @@ local function evaluate_multi(state)
     }
   end
   return { m = m, per_good = per_good, nprobes = nprobes }
+end
+
+-- === Typed-probe evaluation (independent buffer) ===========================
+-- Each typed probe pins ONE resource. Per resource: its wagons are its typed
+-- probes (so train length varies per resource), each a FULL wagon (no ÷M). The
+-- goods list is DERIVED from the wired typed probes (sorted by name for a stable
+-- FIFO order).
+local function evaluate_typed(state)
+  local groups, order = {}, {}
+  local main_fluid = (state.kind == KIND.FLUID)
+  for _, probe in pairs(state.typed_probes or {}) do
+    if probe.valid then
+      local r = storage.typed[probe.unit_number]
+      -- only probes whose pinned kind matches the main's Type (a leftover from a
+      -- different Type is ignored, not misread -> reactivates if you switch back)
+      if r and r.name and ((r.fluid and true or false) == main_fluid) then
+        local g = groups[r.name]
+        if not g then
+          g = { icon = r.name, quality = r.quality or "normal", probes = {} }
+          groups[r.name] = g
+          order[#order + 1] = r.name
+        end
+        table.insert(g.probes, probe)
+      end
+    end
+  end
+  table.sort(order)
+
+  local per_good = {}
+  for gi, name in ipairs(order) do
+    local g    = groups[name]
+    local icon = g.icon
+    local cap  = per_wagon_capacity_for(state, icon, 1)  -- full wagon, no ÷M
+    local item = (state.kind == KIND.ITEM) and prototypes.item[icon] or nil
+    local rows, min_loads = {}, nil
+    local stored_total, cap_total = 0, 0
+    for wi, probe in ipairs(g.probes) do
+      local stored   = probe_stored(state, probe, icon)
+      local units    = probe_buffer_units(state, probe)
+      local capacity = (state.kind == KIND.FLUID) and units or (item and units * item.stack_size or 0)
+      local loads = 0
+      if cap and cap > 0 then
+        if state.direction == DIRECTION.LOAD then
+          loads = math.floor(stored / cap)
+        else
+          loads = math.floor((capacity - stored) / cap)
+        end
+        if loads < 0 then loads = 0 end
+      end
+      rows[wi] = { stored = stored, capacity = capacity, loads = loads }
+      stored_total = stored_total + stored
+      cap_total    = cap_total + capacity
+      if min_loads == nil or loads < min_loads then min_loads = loads end
+    end
+    per_good[gi] = {
+      icon = icon, quality = g.quality, cap = cap, rows = rows,
+      ready_loads = min_loads or 0, ready = (min_loads or 0) >= 1,
+      stored_total = stored_total, cap_total = cap_total,
+    }
+  end
+  return { m = #order, per_good = per_good, nprobes = #(state.typed_probes or {}), typed = true, keys = order }
 end
 
 -- A train currently stopped at any wired stop (nil if the quay is empty).
@@ -481,34 +572,43 @@ local function dispatch_fifo(state, em)
     state.active_request = nil
   end
 
-  -- enqueue newly-ready goods (preserve FIFO order), drop no-longer-ready ones
+  -- Release the active good when its train ARRIVES (rename-on-arrival), but
+  -- remember it as `last_served` while that train is still at the quay so it is
+  -- NEVER re-queued while being served (no two demands for the same resource).
+  -- Once the quay clears, the good is eligible again (round-robin).
+  local train = stopped_train(state)
+  if train then
+    if state.active_request and train.id ~= state.released_train_id then
+      state.released_train_id = train.id
+      state.last_served       = state.active_request
+      state.active_request    = nil
+    end
+  else
+    state.released_train_id = nil
+    state.last_served       = nil
+  end
+
+  -- Queue = the ready goods that are neither active nor currently being served,
+  -- each present at most once (FIFO order preserved, served good re-added at tail).
   local in_queue = {}
   for _, gi in ipairs(state.request_queue) do in_queue[gi] = true end
   for gi, info in ipairs(pg) do
-    if info.ready and gi ~= state.active_request and not in_queue[gi] then
+    if info.ready and gi ~= state.active_request and gi ~= state.last_served and not in_queue[gi] then
       table.insert(state.request_queue, gi)
       in_queue[gi] = true
     end
   end
   local kept = {}
   for _, gi in ipairs(state.request_queue) do
-    if pg[gi] and pg[gi].ready then kept[#kept + 1] = gi end
+    if pg[gi] and pg[gi].ready and gi ~= state.last_served then kept[#kept + 1] = gi end
   end
   state.request_queue = kept
 
-  -- release on train arrival
-  local train = stopped_train(state)
-  if train then
-    if state.active_request and train.id ~= state.released_train_id then
-      state.released_train_id = train.id
-      state.active_request = nil
-    end
-  else
-    state.released_train_id = nil  -- quay empty: a fresh arrival may release again
-  end
-
-  -- commit to the head of the queue if nothing is active
-  if not state.active_request then
+  -- Commit to the head of the queue only when the quay is EMPTY. Waiting for the
+  -- previous train to leave means the buffer reflects its cargo, so readiness
+  -- (esp. free room when unloading) is evaluated on the real state -> we never
+  -- request a train that won't fit / can't be filled.
+  if not state.active_request and not train then
     while #state.request_queue > 0 do
       local gi = table.remove(state.request_queue, 1)
       if pg[gi] and pg[gi].ready then state.active_request = gi; break end
@@ -629,11 +729,23 @@ end
 --                           shares a name with a 3-wagon bay);
 --   name_wagon_count OFF -> exactly one icon.
 -- Empty if no wagon type is chosen yet (can't render its icon).
+-- How many wagons the CURRENT resource (state.icon) represents in the name:
+--   single / generic multi -> the generic probes;
+--   typed multi -> the typed probes of that resource (its per-good rows).
+local function wagon_count_for(state)
+  if is_multi(state) and state.eval_multi and state.icon then
+    for _, info in ipairs(state.eval_multi.per_good or {}) do
+      if info.icon == state.icon then return #(info.rows or {}) end
+    end
+  end
+  return #(state.probes or {})
+end
+
 local function wagon_run(state)
   if not state.wagon_type then return "" end
   local tag = "[entity=" .. state.wagon_type .. "]"
   if not state.name_wagon_count then return tag end
-  local n = #(state.probes or {})
+  local n = wagon_count_for(state)
   if n <= 0 then return "" end
   return string.rep(tag, n)
 end
@@ -673,9 +785,15 @@ local function drive_station(state)
   end
 end
 
+-- Empty eval/eval_multi shells used when a module is in an error/idle state.
+local function blank_eval() return { cap = nil, rows = {}, raw = 0, stored_total = 0, cap_total = 0 } end
+
 local function refresh(state)
   if not (state.entity and state.entity.valid) then return end
   discover(state)
+  state.error = nil
+  local has_gen   = #(state.probes or {}) > 0
+  local has_typed = #(state.typed_probes or {}) > 0
 
   if is_multi(state) then
     -- The multi module always drives the stop by name + train-limit (L is 0/1),
@@ -685,7 +803,27 @@ local function refresh(state)
     state.link_train_count = true
     state.name_wagon_count = (state.name_wagon_count ~= false)
 
-    local em = evaluate_multi(state)
+    -- Probe types are mutually exclusive on the multi module.
+    if has_gen and has_typed then
+      state.error = "mix"
+      state.eval, state.eval_multi = blank_eval(), { per_good = {} }
+      state.trains_call = 0
+      write_output(state); drive_station(state)
+      return
+    end
+
+    local typed_mode = has_typed
+    state.typed_mode = typed_mode
+    local em = typed_mode and evaluate_typed(state) or evaluate_multi(state)
+    -- Typed goods are derived from the wired probes; if that set changes, the
+    -- FIFO indices are stale -> reset the dispatch.
+    if typed_mode then
+      local sig = table.concat(em.keys or {}, ",")
+      if sig ~= state.typed_sig then
+        state.request_queue, state.active_request, state.released_train_id = {}, nil, nil
+        state.typed_sig = sig
+      end
+    end
     state.eval_multi = em
     local active = dispatch_fifo(state, em)
     if active and em.per_good[active] then
@@ -696,7 +834,8 @@ local function refresh(state)
                      stored_total = info.stored_total, cap_total = info.cap_total }
       state.trains_call = 1
     else
-      state.eval = { cap = nil, rows = {}, raw = 0, stored_total = 0, cap_total = 0 }
+      state.icon = nil  -- nothing active -> don't leave a stale good for the name
+      state.eval = blank_eval()
       state.trains_call = 0
     end
     if not gate_open(state) then state.trains_call = 0 end
@@ -704,6 +843,15 @@ local function refresh(state)
 
     write_output(state)
     drive_station(state)
+    return
+  end
+
+  -- Single module: typed probes are not supported here.
+  if has_typed then
+    state.error = "typed-on-single"
+    state.eval = blank_eval()
+    state.trains_call = 0
+    write_output(state); write_tracked_signal(state); drive_station(state)
     return
   end
 
@@ -740,19 +888,76 @@ local function update_base(player, state)
   local icon_el  = content[STATUS][ST_ICON]
   local label_el = content[STATUS][ST_LABEL]
   local multi    = is_multi(state)
-  local has_good = multi and (#(state.goods or {}) > 0) or (not multi and state.icon ~= nil)
-  local ok = has_good and state.wagon_type ~= nil and #state.probes > 0
-  icon_el.sprite  = ok and "flib_indicator_green" or "flib_indicator_red"
+
+  -- error states take priority
+  if state.error == "mix" then
+    icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-mix" }; return
+  elseif state.error == "typed-on-single" then
+    icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-typed" }; return
+  end
+
+  local typed = multi and state.typed_mode
+  if multi then
+    local gf = content[GOODS_FRAME]
+    local gt = gf and gf[GOODS_TABLE]
+    if gf and gf[GOODS_HINT] then gf[GOODS_HINT].visible = typed and true or false end
+    local is_fluid = (state.kind == KIND.FLUID)
+    local n = MAX_GOODS
+    if gt and typed then
+      -- show the detected resources (read-only) and grey the slots
+      local pg = (state.eval_multi or {}).per_good or {}
+      for i = 1, n do
+        local b = gt[GOOD_BTN .. i]
+        if b then
+          b.enabled = false
+          local g = pg[i]
+          if is_fluid then
+            b.elem_value = (g and g.icon and prototypes.fluid[g.icon]) and g.icon or nil
+          else
+            b.elem_value = (g and g.icon and prototypes.item[g.icon]) and { name = g.icon, quality = g.quality or "normal" } or nil
+          end
+        end
+      end
+      state.grid_forced = true
+    elseif gt then
+      for i = 1, n do
+        if gt[GOOD_BTN .. i] then gt[GOOD_BTN .. i].enabled = true end
+      end
+      -- after leaving typed mode, restore the player's own goods into the grid
+      if state.grid_forced then
+        for i = 1, n do
+          local b, g = gt[GOOD_BTN .. i], state.goods[i]
+          if b then
+            if is_fluid then
+              b.elem_value = (g and g.name and prototypes.fluid[g.name]) and g.name or nil
+            else
+              b.elem_value = (g and g.name and prototypes.item[g.name]) and { name = g.name, quality = g.quality or "normal" } or nil
+            end
+          end
+        end
+        state.grid_forced = false
+      end
+    end
+  end
+
+  local nprobes  = typed and #(state.typed_probes or {}) or #(state.probes or {})
+  local has_good
+  if typed then        has_good = nprobes > 0
+  elseif multi then    has_good = #(state.goods or {}) > 0
+  else                 has_good = state.icon ~= nil end
+
+  local ok = has_good and state.wagon_type ~= nil and nprobes > 0
+  icon_el.sprite = ok and "flib_indicator_green" or "flib_indicator_red"
   if not has_good then
-    label_el.caption = { "stc2-gui.status-pick-good" }
+    label_el.caption = typed and { "stc2-gui.status-typed-need" } or { "stc2-gui.status-pick-good" }
   elseif not state.wagon_type then
     label_el.caption = { "stc2-gui.status-pick-wagon" }
-  elseif #state.probes == 0 then
+  elseif nprobes == 0 then
     label_el.caption = { "stc2-gui.status-need-probes" }
   elseif #(state.stops or {}) == 0 then
     label_el.caption = { "stc2-gui.status-working-nostop" }
   else
-    label_el.caption = { "stc2-gui.status-working" }
+    label_el.caption = typed and { "stc2-gui.status-working-typed" } or { "stc2-gui.status-working" }
   end
 end
 
@@ -766,12 +971,12 @@ local function update_stop(player, state)
   nf[NAME_PREVIEW].visible = not not state.train_stop_name  -- hide preview when auto-naming is off
   if not state.train_stop_name then return end
   if is_multi(state) then
-    -- the multi name is dynamic (one good at a time); preview the first configured
-    -- good as a sample rather than the transient active request (which is nil idle).
-    local goods = state.goods or {}
-    if #goods > 0 then
+    -- the multi name is dynamic (one good at a time); preview the first evaluated
+    -- good as a sample (works for both shared and typed-probe modes).
+    local pg = (state.eval_multi or {}).per_good or {}
+    if pg[1] and pg[1].icon then
       local si, sq = state.icon, state.icon_quality
-      state.icon, state.icon_quality = goods[1].name, goods[1].quality
+      state.icon, state.icon_quality = pg[1].icon, pg[1].quality
       nf[NAME_PREVIEW].caption = { "stc2-gui.name-preview-multi", build_station_name(state) }
       state.icon, state.icon_quality = si, sq
     else
@@ -976,7 +1181,7 @@ local function build_base_gui(player, state)
 
   -- Body content children (status indicator, preview, config table[, goods]).
   local content = { type = "flow", name = CONTENT, direction = "vertical",
-    style_mods = { vertical_spacing = 10, minimal_width = 320 } }
+    style_mods = { vertical_spacing = 10, minimal_width = 320, minimal_height = 400 } }
   table.insert(content, { type = "flow", name = STATUS, style = "flib_indicator_flow",
     { type = "sprite", name = ST_ICON, sprite = "flib_indicator_red", style_mods = { size = 16, stretch_image_to_widget_size = true } },
     { type = "label", name = ST_LABEL, caption = "" },
@@ -985,7 +1190,7 @@ local function build_base_gui(player, state)
   table.insert(content, config_table)
 
   if multi then
-    local n = is_fluid and 1 or MAX_GOODS
+    local n = MAX_GOODS
     local goods_table = { type = "table", name = GOODS_TABLE, column_count = MAX_GOODS,
       style_mods = { horizontal_spacing = 4, vertical_spacing = 4 } }
     for i = 1, n do
@@ -996,6 +1201,8 @@ local function build_base_gui(player, state)
       type = "frame", name = GOODS_FRAME, style = "bordered_frame", direction = "vertical",
       style_mods = { horizontally_stretchable = true, top_padding = 6 },
       { type = "label", style = "caption_label", caption = { "stc2-gui.sec-goods" } },
+      { type = "label", name = GOODS_HINT, caption = { "stc2-gui.goods-typed-hint" }, visible = false,
+        style_mods = { single_line = false, maximal_width = 480, font_color = { 1, 0.85, 0.4 } } },
       goods_table,
     })
   end
@@ -1041,7 +1248,7 @@ local function build_base_gui(player, state)
     good_flow[FLUIDBTN].elem_value = fluid_ok and state.icon or nil
   else
     local gt = body_flow[GOODS_FRAME][GOODS_TABLE]
-    for i = 1, (is_fluid and 1 or MAX_GOODS) do
+    for i = 1, (MAX_GOODS) do
       local btn, g = gt[GOOD_BTN .. i], state.goods[i]
       if btn and g and g.name then
         if is_fluid and prototypes.fluid[g.name] then
@@ -1078,7 +1285,7 @@ local function build_stop_gui(player, state, base_fresh)
         type = "frame", name = "stc2-stop-body", style = "inside_shallow_frame", direction = "vertical",
         style_mods = { padding = 12 },
         { type = "flow", name = "stc2-stop-flow", direction = "vertical",
-          style_mods = { vertical_spacing = 12, minimal_width = 320 },
+          style_mods = { vertical_spacing = 12, minimal_width = 320, minimal_height = 400 },
           -- TOP section: automatic naming + live preview.
           { type = "frame", name = "stc2-name-frame", style = "bordered_frame", direction = "vertical",
             style_mods = { horizontally_stretchable = true },
@@ -1154,7 +1361,7 @@ local function build_monitor_gui(player, state, base_fresh)
         type = "frame", name = "stc2-mon-body", style = "inside_shallow_frame", direction = "vertical",
         style_mods = { padding = 12 },
         { type = "flow", name = "stc2-mon-content", direction = "vertical",
-          style_mods = { vertical_spacing = 8, minimal_width = 300 },
+          style_mods = { vertical_spacing = 8, minimal_width = 300, minimal_height = 218 },
           { type = "label", name = CAP_LBL, style = "caption_label", caption = "" },
           { type = "flow", name = WAGONS, direction = "vertical", style_mods = { vertical_spacing = 4, left_padding = 4 } },
           { type = "line" },
@@ -1215,6 +1422,63 @@ local function build_net_gui(player, state, base_fresh)
   reposition_secondaries(player)
 end
 
+-- The kind (item/fluid) of the MAIN this probe is wired to, so the typed probe
+-- offers the matching picker (you can't pin the wrong kind). nil if not wired yet.
+local function probe_main_kind(probe)
+  for _, e in pairs(walk_network(probe, LEASH_CONNECTORS)) do
+    if e.name == MAIN or e.name == MULTI then
+      local st = storage.mains[e.unit_number]
+      if st then return st.kind end
+    end
+  end
+end
+
+-- Typed-probe window: pin ONE resource to this probe (item or fluid, matching
+-- the wired main's Type). Its own little window (the probe is a passive shell).
+local function build_typed_gui(player, probe)
+  local un = probe.unit_number
+  destroy_win(player, TYPEDWIN)
+  local r = storage.typed[un] or {}
+  local is_fluid_kind = (probe_main_kind(probe) == KIND.FLUID)
+
+  local row = { type = "flow", name = "stc2-typed-row", direction = "horizontal",
+    style_mods = { vertical_align = "center", horizontal_spacing = 8 } }
+  table.insert(row, { type = "label", caption = { "stc2-gui.typed-resource" } })
+  if is_fluid_kind then
+    table.insert(row, { type = "choose-elem-button", name = TYPED_FLUID, elem_type = "fluid" })
+  else
+    table.insert(row, { type = "choose-elem-button", name = TYPED_ELEM, elem_type = "item-with-quality" })
+  end
+
+  flib_gui.add(player.gui.screen, {
+    {
+      type = "frame", name = TYPEDWIN, direction = "vertical",
+      { type = "flow", style = "flib_titlebar_flow", drag_target = TYPEDWIN,
+        { type = "label", style = "frame_title", caption = { "entity-name.stc-typed-probe" }, ignored_by_interaction = true },
+        { type = "empty-widget", style = "flib_titlebar_drag_handle", ignored_by_interaction = true },
+        { type = "sprite-button", name = TYPED_CLOSE, style = "frame_action_button", sprite = "utility/close" },
+      },
+      { type = "frame", name = "stc2-typed-body", style = "inside_shallow_frame", direction = "vertical",
+        style_mods = { padding = 12 },
+        { type = "flow", name = "stc2-typed-content", direction = "vertical", style_mods = { vertical_spacing = 10, minimal_width = 260 },
+          { type = "label", caption = { "stc2-gui.typed-help" }, style_mods = { single_line = false, maximal_width = 260 } },
+          row,
+        },
+      },
+    },
+  })
+
+  local r_row = player.gui.screen[TYPEDWIN]["stc2-typed-body"]["stc2-typed-content"]["stc2-typed-row"]
+  if is_fluid_kind then
+    if r.name and prototypes.fluid[r.name] then r_row[TYPED_FLUID].elem_value = r.name end
+  elseif r.name and prototypes.item[r.name] then
+    r_row[TYPED_ELEM].elem_value = { name = r.name, quality = r.quality or "normal" }
+  end
+  local win = player.gui.screen[TYPEDWIN]
+  win.force_auto_center()
+  player.opened = win
+end
+
 -- ===========================================================================
 -- GUI helpers
 -- ===========================================================================
@@ -1250,6 +1514,11 @@ script.on_event(defines.events.on_gui_opened, function(event)
     player.opened = nil
     return
   end
+  if e.name == TYPED then
+    storage.typed_guis[player.index] = e.unit_number
+    build_typed_gui(player, e)
+    return
+  end
   if e.name ~= MAIN and e.name ~= MULTI then return end
   local state = storage.mains[e.unit_number]
   if not state then return end
@@ -1267,9 +1536,15 @@ script.on_event(defines.events.on_gui_closed, function(event)
   -- Ignore spurious closes (e.g. a choose-elem-button opening its picker swaps
   -- player.opened and fires on_gui_closed with a non-custom gui_type).
   if event.gui_type ~= defines.gui_type.custom then return end
-  if not (event.element and event.element.valid and event.element.name == WINDOW) then return end
+  if not (event.element and event.element.valid) then return end
   local player = game.get_player(event.player_index)
-  if player then close_gui(player) end
+  if not player then return end
+  if event.element.name == WINDOW then
+    close_gui(player)
+  elseif event.element.name == TYPEDWIN then
+    storage.typed_guis[player.index] = nil
+    destroy_win(player, TYPEDWIN)
+  end
 end)
 
 -- Remember where the player drags the secondary windows, so they reopen in place
@@ -1287,6 +1562,9 @@ script.on_event(defines.events.on_gui_click, function(event)
   if name == CLOSE then
     local player = game.get_player(event.player_index)
     if player then player.opened = nil end -- triggers on_gui_closed
+  elseif name == TYPED_CLOSE then
+    local player = game.get_player(event.player_index)
+    if player then player.opened = nil end -- triggers on_gui_closed (TYPEDWIN)
   elseif name == STOP_TOGGLE then
     local player = game.get_player(event.player_index)
     local state  = gui_state(event)
@@ -1363,8 +1641,27 @@ end)
 
 script.on_event(defines.events.on_gui_elem_changed, function(event)
   local player = game.get_player(event.player_index)
-  local state  = gui_state(event)
-  if not (player and state) then return end
+  if not player then return end
+  -- typed-probe resource picker (its own window, no main state). Item OR fluid,
+  -- mutually exclusive: picking one clears the other.
+  if event.element.name == TYPED_ELEM or event.element.name == TYPED_FLUID then
+    local un = storage.typed_guis[player.index]
+    if un then
+      local win = player.gui.screen[TYPEDWIN]
+      local row = win and win["stc2-typed-body"]["stc2-typed-content"]["stc2-typed-row"]
+      local v = event.element.elem_value
+      if event.element.name == TYPED_ELEM then
+        storage.typed[un] = v and { name = v.name, quality = v.quality or "normal", fluid = false } or {}
+        if row and row[TYPED_FLUID] then row[TYPED_FLUID].elem_value = nil end
+      else
+        storage.typed[un] = v and { name = (type(v) == "table" and v.name or v), quality = "normal", fluid = true } or {}
+        if row and row[TYPED_ELEM] then row[TYPED_ELEM].elem_value = nil end
+      end
+    end
+    return
+  end
+  local state = gui_state(event)
+  if not state then return end
   local name = event.element.name
   if name == ITEMBTN then
     local v = event.element.elem_value  -- { name, quality } or nil
@@ -1412,7 +1709,7 @@ script.on_event(defines.events.on_gui_elem_changed, function(event)
     if gt then
       local is_fluid = (state.kind == KIND.FLUID)
       local goods = {}
-      for i = 1, (is_fluid and 1 or MAX_GOODS) do
+      for i = 1, (MAX_GOODS) do
         local el = gt[GOOD_BTN .. i]
         local v = el and el.elem_value
         if v then
@@ -1565,18 +1862,25 @@ local function on_built(event)
       read_tracked_signal(st)  -- a parametrized blueprint substitutes the resource here
     end
     storage.mains[e.unit_number] = st
+  elseif e.name == TYPED then
+    local r = event.tags and event.tags.stc2_typed
+    storage.typed[e.unit_number] = (type(r) == "table" and r.name) and { name = r.name, quality = r.quality, fluid = r.fluid } or {}
   end
 end
 
 local function on_removed(event)
   ensure_storage()
   local e = event.entity
-  if e and e.valid and (e.name == MAIN or e.name == MULTI) then
-    storage.mains[e.unit_number] = nil
+  if e and e.valid then
+    if e.name == MAIN or e.name == MULTI then
+      storage.mains[e.unit_number] = nil
+    elseif e.name == TYPED then
+      storage.typed[e.unit_number] = nil
+    end
   end
 end
 
-local filters = { { filter = "name", name = MAIN }, { filter = "name", name = MULTI }, { filter = "name", name = PROBE } }
+local filters = { { filter = "name", name = MAIN }, { filter = "name", name = MULTI }, { filter = "name", name = PROBE }, { filter = "name", name = TYPED } }
 script.on_event(defines.events.on_built_entity,                on_built, filters)
 script.on_event(defines.events.on_robot_built_entity,          on_built, filters)
 script.on_event(defines.events.on_space_platform_built_entity, on_built, filters)
@@ -1618,6 +1922,9 @@ script.on_event(defines.events.on_player_setup_blueprint, function(event)
     if source and source.valid and (source.name == MAIN or source.name == MULTI) then
       local st = storage.mains[source.unit_number]
       if st then bp.set_blueprint_entity_tag(i, "stc2", config_of(st)) end
+    elseif source and source.valid and source.name == TYPED then
+      local r = storage.typed[source.unit_number]
+      if r and r.name then bp.set_blueprint_entity_tag(i, "stc2_typed", { name = r.name, quality = r.quality, fluid = r.fluid }) end
     end
   end
 end)
@@ -1641,8 +1948,13 @@ end)
 script.on_event(defines.events.on_entity_cloned, function(event)
   local src, dst = event.source, event.destination
   if not (src and dst and src.valid and dst.valid) then return end
-  if dst.name ~= MAIN and dst.name ~= MULTI then return end
   ensure_storage()
+  if dst.name == TYPED then
+    local r = storage.typed[src.unit_number]
+    storage.typed[dst.unit_number] = (r and r.name) and { name = r.name, quality = r.quality, fluid = r.fluid } or {}
+    return
+  end
+  if dst.name ~= MAIN and dst.name ~= MULTI then return end
   local st = default_state(dst)
   local ss = storage.mains[src.unit_number]
   if ss then apply_config(st, config_of(ss)) end

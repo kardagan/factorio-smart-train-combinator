@@ -117,8 +117,32 @@ for k in pairs(probe) do
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- TYPED PROBE ("stc-typed-probe"): like the generic probe, but the player pins
+-- ONE resource to it. Used by the MULTI module's "independent buffer" mode -
+-- each resource's wagons are its typed probes (so train length varies per
+-- resource), no shared/divided buffer. Same passive arithmetic-combinator shell.
+-- ---------------------------------------------------------------------------
+local TYPED       = "stc-typed-probe"
+local TPROBE_NS   = "__smart-train-combinator__/graphics/typed-probe-ns.png"
+local TPROBE_EW   = "__smart-train-combinator__/graphics/typed-probe-ew.png"
+local TPROBE_ICON = "__smart-train-combinator__/graphics/typed-probe-icon.png"
+
+local typed = table.deepcopy(probe)
+typed.name           = TYPED
+typed.minable.result = TYPED
+typed.sprites = {
+  north = { filename = TPROBE_NS, width = 120, height = 256, scale = 0.25, shift = { 0, 0 } },
+  south = { filename = TPROBE_NS, width = 120, height = 256, scale = 0.25, shift = { 0, 0 } },
+  east  = { filename = TPROBE_EW, width = 256, height = 109, scale = 0.25, shift = { 0, 0 } },
+  west  = { filename = TPROBE_EW, width = 256, height = 109, scale = 0.25, shift = { 0, 0 } },
+}
+typed.icon, typed.icon_size = nil, nil
+typed.icons = { { icon = TPROBE_ICON, icon_size = 64 } }
+
 data:extend({
   main,
+  typed,
   multi,
   probe,
 
@@ -148,6 +172,15 @@ data:extend({
     subgroup     = "circuit-network",
     order        = "c[combinators]-e[smart-train-combinator]-b[probe]",
     place_result = PROBE,
+    stack_size   = 50,
+  },
+  {
+    type         = "item",
+    name         = TYPED,
+    icons        = { { icon = TPROBE_ICON, icon_size = 64 } },
+    subgroup     = "circuit-network",
+    order        = "c[combinators]-e[smart-train-combinator]-bt[typed-probe]",
+    place_result = TYPED,
     stack_size   = 50,
   },
 
@@ -183,6 +216,16 @@ data:extend({
     },
     results = { { type = "item", name = PROBE, amount = 1 } },
   },
+  {
+    type        = "recipe",
+    name        = TYPED,
+    enabled     = false,
+    ingredients = {
+      { type = "item", name = "arithmetic-combinator", amount = 1 },
+      { type = "item", name = "electronic-circuit",    amount = 2 },
+    },
+    results = { { type = "item", name = TYPED, amount = 1 } },
+  },
 
   -- Technology unlocking both
   {
@@ -205,6 +248,7 @@ data:extend({
       { type = "unlock-recipe", recipe = MAIN },
       { type = "unlock-recipe", recipe = MULTI },
       { type = "unlock-recipe", recipe = PROBE },
+      { type = "unlock-recipe", recipe = TYPED },
     },
   },
 })
@@ -265,6 +309,7 @@ if mods["nullius"] then
   local main_recipe  = nullius_recipe(MAIN)
   local multi_recipe = nullius_recipe(MULTI)
   local probe_recipe = nullius_recipe(PROBE)
+  local typed_recipe = nullius_recipe(TYPED)
 
   local tech = data.raw.technology[MAIN]
   tech.localised_name        = { "technology-name." .. MAIN }
@@ -285,6 +330,7 @@ if mods["nullius"] then
     { type = "unlock-recipe", recipe = main_recipe },
     { type = "unlock-recipe", recipe = multi_recipe },
     { type = "unlock-recipe", recipe = probe_recipe },
+    { type = "unlock-recipe", recipe = typed_recipe },
   }
   tech.name = "nullius-" .. MAIN
   data.raw.technology["nullius-" .. MAIN] = tech

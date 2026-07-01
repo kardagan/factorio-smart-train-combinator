@@ -6,20 +6,21 @@
 # pour les deux versions du jeu. Seul info.json change (factorio_version + bornes
 # base/flib + numéro). On dérive donc deux zips d'un même code.
 #
-# Convention de version :
+# Convention de version (le MINOR encode le canal de jeu) :
 #   info.json porte le VRAI semver du mod (ex. 1.0.0) = la release Factorio 2.0.
-#   La release Factorio 2.1 reprend le même code avec le PATCH +1 (ex. 1.0.1).
-#   Ce micro-delta sert juste à distinguer le canal 2.1 (le portal exige des
-#   numéros uniques). Quand on abandonnera le support 2.0, on supprimera la cible
-#   2.0 et le mod reprendra un patch continu sans delta.
+#   La release Factorio 2.1 reprend le même code avec le MINOR +1 (ex. 1.1.0).
+#   => minor PAIR (0,2,4...) = canal Factorio 2.0 ; minor IMPAIR (1,3,5...) = 2.1.
+#   Un fix se fait par un bump de PATCH sur les DEUX canaux : 1.0.0 -> 1.0.1 (2.0)
+#   et 1.1.0 -> 1.1.1 (2.1) ; le patch reste donc libre pour les correctifs.
 #   La nature feature/correctif est portée par changelog.txt, pas par le numéro.
 #
-#   ATTENTION collision : à chaque nouvelle release, avancer le patch canonique
-#   d'AU MOINS 2 (1.0.0 -> 1.0.2 -> ...) ou bumper minor/major, pour ne jamais
-#   réutiliser un numéro 2.1 déjà sorti (1.0.0/1.0.1 puis 1.0.2/1.0.3, etc.).
+#   ATTENTION collision : pour une release de FEATURE, avancer le minor canonique
+#   d'AU MOINS 2 (1.0.x -> 1.2.x), afin que le 2.1 dérivé (1.3.x) ne réutilise
+#   jamais un minor impair déjà sorti (1.1.x). Quand on abandonnera 2.0, on
+#   supprimera la cible 2.0 et le mod reprendra un versioning continu sans delta.
 #
 # Usage :
-#   ./build.sh package        # génère dist/...-_1.0.0.zip (2.0) et _1.0.1.zip (2.1)
+#   ./build.sh package        # génère dist/...-_1.0.0.zip (2.0) et _1.1.0.zip (2.1)
 #   ./build.sh link           # lien symbolique dev: ~/.factorio/mods/<mod> -> ce repo
 #   ./build.sh unlink         # retire le lien dev
 #   ./build.sh install        # package, puis copie le zip 2.0 dans ~/.factorio/mods/
@@ -50,7 +51,7 @@ CONTENTS=(
   locale
 )
 
-# Cibles : "gamever:base_min:flib_min:patch_offset"
+# Cibles : "gamever:base_min:flib_min:minor_offset"
 TARGETS=(
   "2.0:2.0.0:0.16.5:0"
   "2.1:2.1.0:0.17.0:1"
@@ -88,12 +89,12 @@ with open(path, "w") as f:
 PY
 }
 
-# X.Y.Z + offset sur le patch -> X.Y.(Z+offset)
-bump_patch() {
+# X.Y.Z + offset sur le minor -> X.(Y+offset).Z
+bump_minor() {
   local ver="$1" offset="$2"
   local maj="${ver%%.*}" rest="${ver#*.}"
   local min="${rest%%.*}" pat="${rest#*.}"
-  echo "${maj}.${min}.$((pat + offset))"
+  echo "${maj}.$((min + offset)).${pat}"
 }
 
 package() {
@@ -103,7 +104,7 @@ package() {
 
   for target in "${TARGETS[@]}"; do
     IFS=':' read -r gamever base_min flib_min offset <<<"$target"
-    local modver; modver="$(bump_patch "$base" "$offset")"
+    local modver; modver="$(bump_minor "$base" "$offset")"
     local stage="$DIST/${MOD_NAME}_${modver}"
 
     mkdir -p "$stage"
