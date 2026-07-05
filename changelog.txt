@@ -1,4 +1,18 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.2
+Date: 2026-07-05
+  Bugfixes:
+    - Nullius: the mod recipes can now be built again both by hand and in assembling machines. They
+      were previously hand-craft-only (Nullius assemblers reject the vanilla "crafting" category),
+      then machine-only once categorized. The recipes now use Nullius "*-crafting" categories, which
+      both the assemblers and the character accept: the main modules use "large-crafting" (medium and
+      large assemblers plus hand crafting), and the probes use "medium-crafting" (all three assembler
+      sizes plus hand crafting).
+    - Nullius: each module and probe no longer appears twice in Recipe Book (once as an item, once as
+      a recipe). The recipe is no longer renamed with the "nullius-" prefix (which broke Recipe Book's
+      item/recipe merge); it escapes Nullius's prototype hiding via its order prefix instead, keeping
+      the recipe name equal to its product.
+---------------------------------------------------------------------------------------------------
 Version: 1.0.1
 Date: 2026-07-05
   Bugfixes:
