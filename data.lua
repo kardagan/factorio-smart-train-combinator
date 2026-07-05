@@ -286,30 +286,54 @@ data:extend({
 })
 
 -- ---------------------------------------------------------------------------
--- Nullius compatibility (data phase) - same proven approach as the STC 1.0.3
--- port: rename recipe + technology with the "nullius-" prefix BEFORE Nullius's
--- hidden.lua (data-updates) runs, so they (and the items they produce) are
--- spared from hiding.
+-- Nullius compatibility (data phase).
+--
+-- Nullius's hidden.lua (data-updates) hides every prototype whose *name* OR
+-- *order* does not start with "nullius-". The obvious escape is to rename the
+-- recipe to "nullius-<name>", but that breaks Recipe Book: it only merges a
+-- recipe with its produced item when recipe.name == product.name (see
+-- RecipeBook scripts/database/grouped.lua:get_simple_product). A renamed recipe
+-- (nullius-smart-train-combinator) no longer matches its product
+-- (smart-train-combinator), so Recipe Book shows the item AND the recipe twice.
+--
+-- So we escape via the *order* prefix instead: we keep the recipe name equal to
+-- its product (Recipe Book merges them) and only prefix the recipe/item order
+-- with "nullius-". A recipe that escapes also un-hides its products in cascade
+-- (hidden.lua:133-145), so the items are spared too.
+--
+-- We also pin each recipe to a Nullius category (its assemblers reject the
+-- vanilla default "crafting", so an uncategorized recipe would be hand-craft-
+-- only). We use the "*-crafting" categories, NOT "*-assembly": the Nullius
+-- character only hand-crafts the "*-crafting" ones (override_final.lua's
+-- hand_crafting list), so an "*-assembly" recipe would be machine-only. The
+-- "*-crafting" categories are ALSO on the assemblers, giving both hand + machine:
+--   * "large-crafting"  -> medium + large assemblers + hand (excludes the small one)
+--   * "medium-crafting" -> small + medium + large assemblers + hand (all three)
 -- ---------------------------------------------------------------------------
 if mods["nullius"] then
-  local function nullius_recipe(name)
+  local function nullius_recipe(name, category, order)
     local r = data.raw.recipe[name]
     for i, ing in ipairs(r.ingredients) do
       if ing.name == "electronic-circuit" then
         r.ingredients[i] = { type = "item", name = "arithmetic-combinator", amount = 1 }
       end
     end
-    r.localised_name = { "recipe-name." .. name }
-    r.name = "nullius-" .. name
-    data.raw.recipe["nullius-" .. name] = r
-    data.raw.recipe[name] = nil
-    return "nullius-" .. name
+    r.category        = category
+    r.localised_name  = { "recipe-name." .. name }
+    r.order           = order  -- "nullius-" prefix escapes hidden.lua; name is kept == product
+    -- Keep the item's order prefixed too (belt and suspenders).
+    if data.raw.item[name] then
+      data.raw.item[name].order = order
+    end
+    return name  -- unchanged name -> Recipe Book merges recipe with its product
   end
 
-  local main_recipe  = nullius_recipe(MAIN)
-  local multi_recipe = nullius_recipe(MULTI)
-  local probe_recipe = nullius_recipe(PROBE)
-  local typed_recipe = nullius_recipe(TYPED)
+  -- Main modules: medium + large assemblers + hand (excludes the small one).
+  local main_recipe  = nullius_recipe(MAIN,  "large-crafting",  "nullius-df-za")
+  local multi_recipe = nullius_recipe(MULTI, "large-crafting",  "nullius-df-zb")
+  -- Probes: all three assembler sizes + hand.
+  local probe_recipe = nullius_recipe(PROBE, "medium-crafting", "nullius-df-zc")
+  local typed_recipe = nullius_recipe(TYPED, "medium-crafting", "nullius-df-zd")
 
   local tech = data.raw.technology[MAIN]
   tech.localised_name        = { "technology-name." .. MAIN }
