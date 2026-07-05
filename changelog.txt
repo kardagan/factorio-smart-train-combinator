@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.0.1
+Date: 2026-07-05
+  Bugfixes:
+    - Clicking a ghost of any mod entity (from a blueprint, copy-paste or a planned build) no longer
+      opens the wrong vanilla combinator GUI. Ghosts are now recognized by their ghost_name and their
+      GUI is suppressed, since a ghost carries its configuration through blueprint tags and has
+      nothing to configure directly.
+---------------------------------------------------------------------------------------------------
 Version: 1.0.0
 Date: 2026-07-01
   Features:

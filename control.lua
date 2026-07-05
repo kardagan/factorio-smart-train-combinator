@@ -1509,6 +1509,17 @@ script.on_event(defines.events.on_gui_opened, function(event)
   if not player then return end
   local e = event.entity
   if not (e and e.valid) then return end
+  -- Ghosts (blueprint / copy-paste / planned builds) are "entity-ghost", not our
+  -- prototypes; the real name is in ghost_name. Opening one would otherwise show
+  -- the vanilla combinator GUI. We carry all config through blueprint tags and
+  -- rebuild state on revive, so a ghost has nothing to configure: just close it.
+  if e.name == "entity-ghost" then
+    local gn = e.ghost_name
+    if gn == MAIN or gn == MULTI or gn == PROBE or gn == TYPED then
+      player.opened = nil
+    end
+    return
+  end
   if e.name == PROBE then
     -- passive shell: suppress its vanilla arithmetic GUI
     player.opened = nil
