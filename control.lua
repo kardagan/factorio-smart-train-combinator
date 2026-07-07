@@ -107,6 +107,20 @@ local GATE_CONST = "stc2-gate-const"
 local GATE_SIG2  = "stc2-gate-sig2"
 local GATE_REQ   = "stc2-gate-active"  -- monitor: current active request label
 
+-- Global overview screen (lists every module in the game).
+local OVERVIEW      = "stc2-overview"          -- root frame (player.gui.screen)
+local OV_CLOSE      = "stc2-ov-close"
+local OV_LIST       = "stc2-ov-list"           -- scroll-pane holding the rows
+local OV_F_TYPE     = "stc2-ov-f-type"         -- filter: type radios (all/item/fluid)
+local OV_F_RES      = "stc2-ov-f-res"          -- filter: resource picker (item or fluid, per the Type filter)
+local OV_F_DIR      = "stc2-ov-f-dir"          -- filter: direction radios
+local OV_F_STORE    = "stc2-ov-f-store"        -- filter: storage radios
+local OV_EYE        = "stc2-ov-eye-"           -- + module unit_number
+local OV_WAGON      = "stc2-ov-wagon-"         -- + module unit_number
+local OV_TYPES      = { "all", "item", "fluid" }
+local OV_DIRS       = { "all", "load", "unload" }
+local OV_STORES     = { "all", "yes", "no" }
+
 -- Gate operator drop-down order <-> stored gate_op value.
 local GATE_OPS     = { "<", ">", "=", ">=", "<=", "!=" }
 local GATE_OP_CAPS = { "<", ">", "=", "≥", "≤", "≠" }  -- drop-down captions
@@ -127,6 +141,9 @@ local function ensure_storage()
   storage.typed      = storage.typed      or {}  -- typed-probe unit_number -> { name, quality } (pinned resource)
   storage.typed_guis = storage.typed_guis or {}  -- player_index -> typed-probe unit_number (its window open)
   storage.win_loc = storage.win_loc or {}  -- player_index -> { [window_name] = {x,y} }: remembered positions
+  storage.overview_guis    = storage.overview_guis    or {}  -- player_index -> true when the overview screen is open
+  storage.overview_filters = storage.overview_filters or {}  -- player_index -> { type, resource, direction, storage }
+  storage.overview_sig     = storage.overview_sig     or {}  -- player_index -> signature of the rows last built (rebuild vs update)
 end
 
 local function default_state(entity)
@@ -142,7 +159,7 @@ local function default_state(entity)
     max_trains     = 1,
     output_signal  = { type = "virtual", name = "signal-L", quality = "normal" },
     link_train_count = true,
-    train_stop_name  = false,
+    train_stop_name  = true,   -- auto-rename the station by default (with the wagon count)
     name_wagon_count = true,    -- include the wagon (probe) count in the auto-name
     priority_level   = "medium",   -- high / important / medium / low
     link_priority    = false,
@@ -741,9 +758,42 @@ local function wagon_count_for(state)
   return #(state.probes or {})
 end
 
+-- The rich-text tag for the wagon icon in the station name. We use the wagon's
+-- ITEM tag ([item=...]), not its entity tag ([entity=...]): the two look identical
+-- but are different strings, and Factorio's rich-text icon picker (used when a
+-- player rebuilds the name by hand for a train interrupt) inserts the ITEM form.
+-- Station matching is a byte-for-byte string compare, so writing [item=...] lets a
+-- hand-typed interrupt target match the auto-name. Falls back to the entity tag if
+-- the prototype has no placement item (shouldn't happen for a rolling-stock).
+-- Resolve the wagon's placement item name (so the name uses [item=...], the form
+-- the rich-text picker inserts). Several fallbacks because modded wagons (e.g.
+-- Nullius) don't all declare items_to_place_this:
+--   1. items_to_place_this[1].item  (2.0 field is `.item`, not 1.1's `.name`)
+--   2. the mining result item (mineable_properties.products, first type=="item")
+--   3. an item sharing the entity's name (Nullius item-with-entity-data does this)
+local function wagon_item_name(proto, entity_name)
+  local place = proto.items_to_place_this
+  if place and place[1] and place[1].item then return place[1].item end
+  local mp = proto.mineable_properties
+  if mp and mp.products then
+    for _, p in ipairs(mp.products) do
+      if p.type == "item" and p.name then return p.name end
+    end
+  end
+  if prototypes.item[entity_name] then return entity_name end
+  return nil
+end
+
+local function wagon_icon_tag(state)
+  local proto = prototypes.entity[state.wagon_type]
+  if not proto then return "[entity=" .. state.wagon_type .. "]" end
+  local item = wagon_item_name(proto, state.wagon_type)
+  return item and ("[item=" .. item .. "]") or ("[entity=" .. state.wagon_type .. "]")
+end
+
 local function wagon_run(state)
   if not state.wagon_type then return "" end
-  local tag = "[entity=" .. state.wagon_type .. "]"
+  local tag = wagon_icon_tag(state)
   if not state.name_wagon_count then return tag end
   local n = wagon_count_for(state)
   if n <= 0 then return "" end
@@ -763,9 +813,9 @@ local function build_station_name(state)
   -- (loading) and the storage depot (unloading). The arrow+wagons run is unchanged.
   local store = state.storage and "[virtual-signal=stc2-storage]" or ""
   if state.direction == DIRECTION.LOAD then
-    return icon_tag .. store .. " [virtual-signal=stc2-load]" .. wagons
+    return icon_tag .. store .. "[virtual-signal=stc2-load]" .. wagons
   else
-    return icon_tag .. store .. " " .. wagons .. "[virtual-signal=stc2-unload]"
+    return icon_tag .. store .. wagons .. "[virtual-signal=stc2-unload]"
   end
 end
 
@@ -1110,9 +1160,14 @@ end
 -- without overlap. Exact pixel widths aren't exposed by the API.
 -- Fixed panel widths so the glued side panels sit flush (deterministic). The
 -- multi module is wider to fit its 10 requested-resource slots on a single row.
-local BASE_W_MONO  = 372
+-- Base window width. The single title ("Combinateur de gare intelligent" in FR)
+-- plus the four titlebar action buttons overflowed the old 372, pushing the close
+-- (X) button out of the frame; 416 gives the title room to breathe. The glued side
+-- panels follow automatically: reposition_secondaries reads base_w for the right
+-- column, and the left stop panel is offset by its own width (STOP_W), not base_w.
+local BASE_W_MONO  = 416
 local BASE_W_MULTI = 516
-local STOP_W       = 372   -- stop panel width = left glue offset
+local STOP_W       = 372   -- stop panel width = left glue offset (independent of base_w)
 local NET_H        = 182   -- "Condition logique" panel height (fixed content); monitor stacks below it
 local function reposition_secondaries(player)
   local base = player.gui.screen[WINDOW]
@@ -1493,6 +1548,422 @@ local function refresh_and_update(player, state)
 end
 
 -- ===========================================================================
+-- Global overview screen
+--
+-- A screen-anchored window listing every STC module in the game: one row per
+-- module (icons, an inline-editable wagon picker, up to 4 per-probe fill bars,
+-- and a station-call dot), a left filter column (type / resource / direction /
+-- storage), and a per-row "eye" that closes the overview, focuses the module
+-- and opens its GUI. Read-only except the wagon picker. Data source is
+-- storage.mains (unit_number -> state); refreshed by the tick loop while open.
+-- ===========================================================================
+
+-- The player's current filter selection, with sane defaults.
+local function ov_filters(pi)
+  local f = storage.overview_filters[pi]
+  if not f then
+    f = { type = "all", resource = nil, direction = "all", storage = "all" }
+    storage.overview_filters[pi] = f
+  end
+  return f
+end
+
+-- The good name(s) a module tracks: the single main's icon, or the multi's goods.
+local function module_goods(state)
+  if is_multi(state) then
+    local out = {}
+    for _, g in ipairs(state.goods or {}) do if g.name then out[#out + 1] = g.name end end
+    return out
+  end
+  return state.icon and { state.icon } or {}
+end
+
+-- Does `state` pass the player's filters?
+local function ov_matches(state, f)
+  local skind = (state.kind == KIND.FLUID) and "fluid" or "item"
+  if f.type ~= "all" and f.type ~= skind then return false end
+  if f.direction ~= "all" and state.direction ~= f.direction then return false end
+  if f.storage == "yes" and not state.storage then return false end
+  if f.storage == "no"  and state.storage then return false end
+  if f.resource then
+    local hit = false
+    for _, name in ipairs(module_goods(state)) do if name == f.resource then hit = true; break end end
+    if not hit then return false end
+  end
+  return true
+end
+
+-- Modules passing the filters, sorted by unit_number for a stable row order.
+local function ov_filtered_modules(f)
+  local list = {}
+  for un, state in pairs(storage.mains) do
+    if state.entity and state.entity.valid and ov_matches(state, f) then
+      list[#list + 1] = { un = un, state = state }
+    end
+  end
+  table.sort(list, function(a, b) return a.un < b.un end)
+  return list
+end
+
+-- Bars shown on a module row, as a list of { ratio, name, kind }:
+--   * multi module -> one bar PER REQUESTED RESOURCE (aggregate fill across its
+--     probes), so all tracked goods are visible at once, not just the FIFO-active
+--     one. Data comes from state.eval_multi.per_good (refresh computes every good).
+--   * single module -> one bar PER PROBE (each probe is one wagon of the single
+--     good), from state.eval.rows (dense over state.probes).
+-- ratio = stored/capacity (LOAD) or free/capacity (UNLOAD), clamped [0..1].
+local function ov_bars_view(state)
+  if is_multi(state) then
+    local em = state.eval_multi or {}
+    local kind = state.kind
+    local list = {}
+    for _, g in ipairs(em.per_good or {}) do
+      local stored, capt = g.stored_total or 0, g.cap_total or 0
+      local ratio = 0
+      if capt > 0 then
+        local amount = (state.direction == DIRECTION.LOAD) and stored or math.max(0, capt - stored)
+        ratio = math.min(1, amount / capt)
+      end
+      -- keyed by resource name for a stable order (goods list order is stable too)
+      list[#list + 1] = { key = g.icon or "", ratio = ratio, name = g.icon, kind = kind }
+    end
+    return list
+  end
+
+  -- single: one bar per probe, sorted by probe unit_number (stable display order).
+  local eval = state.eval or {}
+  local rows, cap = eval.rows or {}, eval.cap
+  local name, kind = state.icon, state.kind
+  local list = {}
+  local idx = 0
+  for _, probe in ipairs(state.probes or {}) do
+    if probe.valid then
+      idx = idx + 1
+      local r = rows[idx]
+      if r then
+        local ratio = 0
+        if cap and cap > 0 then
+          local amount = (state.direction == DIRECTION.LOAD) and (r.stored or 0)
+                           or math.max(0, (r.capacity or 0) - (r.stored or 0))
+          ratio = math.min(1, amount / cap)
+        end
+        list[#list + 1] = { key = probe.unit_number, ratio = ratio, name = name, kind = kind }
+      end
+    end
+  end
+  table.sort(list, function(a, b) return a.key < b.key end)
+  return list
+end
+
+local function ov_bar_color(ratio)
+  return (ratio >= 0.999) and { 0.3, 0.8, 0.3 } or { 0.9, 0.7, 0.2 }
+end
+
+-- Rich-text icon tag for a probe's resource (nil -> a neutral dash).
+local function ov_probe_icon(entry)
+  if not entry.name then return "[color=140,140,140]—[/color]" end
+  return (entry.kind == KIND.FLUID) and ("[fluid=" .. entry.name .. "]") or ("[item=" .. entry.name .. "]")
+end
+
+-- Station-call indicator sprite + tooltip for a module's current state.
+local function ov_call_dot(state)
+  if state.error then
+    return "flib_indicator_red", { "stc2-gui.ov-call-error" }
+  elseif (state.trains_call or 0) > 0 then
+    return "flib_indicator_green", { "stc2-gui.ov-call-yes" }
+  end
+  return "flib_indicator_black", { "stc2-gui.ov-call-no" }  -- neutral (no "empty" color in flib)
+end
+
+-- The resource whose train is being summoned right now (multi FIFO active request),
+-- as a rich-text icon; "" when idle or not a multi module. state.icon holds the
+-- active good and is cleared by refresh when nothing is active.
+local function ov_active_caption(state)
+  if not (is_multi(state) and (state.trains_call or 0) > 0 and state.icon) then return "" end
+  return (state.kind == KIND.FLUID) and ("[fluid=" .. state.icon .. "]") or ("[item=" .. state.icon .. "]")
+end
+
+-- Build one module row inside the list. Read-only except the wagon picker.
+local function ov_add_row(parent, entry)
+  local state, un = entry.state, entry.un
+  local multi = is_multi(state)
+
+  local row = parent.add({ type = "frame", style = "bordered_frame", direction = "horizontal",
+    name = "stc2-ov-row-" .. un })
+  row.style.horizontally_stretchable = true
+  row.style.vertical_align = "center"
+  row.style.padding = 4
+
+  -- Eye: focus the module + open its GUI.
+  row.add({ type = "sprite-button", name = OV_EYE .. un, style = "tool_button",
+    sprite = "utility/search_icon", tooltip = { "stc2-gui.ov-tip-eye" } })
+
+  -- Storage marker: the warehouse icon only when the module is flagged as one
+  -- (single-good, loading). Nothing otherwise. No more "Single/Multi/Storage" text.
+  local mark = row.add({ type = "label", name = "stc2-ov-mark-" .. un,
+    caption = state.storage and "[virtual-signal=stc2-storage]" or "" })
+  mark.style.minimal_width = 24
+
+  -- Direction arrow (load / unload). The multi module is always unloading.
+  row.add({ type = "label", caption = (state.direction == DIRECTION.UNLOAD)
+    and "[virtual-signal=stc2-unload]" or "[virtual-signal=stc2-load]",
+    tooltip = (state.direction == DIRECTION.UNLOAD) and { "stc2-gui.ov-dir-unload" } or { "stc2-gui.ov-dir-load" } })
+
+  -- (No standalone resource-icon block here: it duplicated the icons shown under
+  -- each fill bar on the right. The per-probe columns already carry the resource.)
+
+  -- Inline-editable wagon picker (the only editable control on this screen).
+  local wagon_ok = state.wagon_type and prototypes.entity[state.wagon_type] ~= nil
+  local wbtn = row.add({ type = "choose-elem-button", name = OV_WAGON .. un,
+    elem_type = "entity-with-quality", elem_filters = wagon_filter(state.kind),
+    tooltip = { "stc2-gui.ov-tip-wagon" } })
+  wbtn.elem_value = wagon_ok and { name = state.wagon_type, quality = state.wagon_quality or "normal" } or nil
+
+  -- Per-probe fill: one column per probe = a thin fill bar on top of that probe's
+  -- resource icon. All probes fit side by side (up to 10), so nothing is hidden.
+  -- The bar is stored/one-wagon-capacity (or free/capacity when unloading).
+  local bars_flow = row.add({ type = "flow", direction = "horizontal", name = "stc2-ov-bars-" .. un })
+  bars_flow.style.horizontal_spacing = 3
+  bars_flow.style.vertical_align = "bottom"
+
+  local view = ov_bars_view(state)
+  if #view == 0 then
+    bars_flow.add({ type = "label", caption = { "stc2-gui.ov-no-probe" } })
+  else
+    for i, e in ipairs(view) do
+      local col = bars_flow.add({ type = "flow", direction = "vertical", name = "stc2-ov-col-" .. un .. "-" .. i })
+      col.style.horizontal_align = "center"
+      col.style.vertical_spacing = 1
+      local pb = col.add({ type = "progressbar", name = "stc2-ov-bar-" .. un .. "-" .. i, value = e.ratio })
+      pb.style.width = 28
+      pb.style.color = ov_bar_color(e.ratio)
+      col.add({ type = "label", caption = ov_probe_icon(e) })
+    end
+  end
+
+  -- Spacer so the "calling" marker + dot sit on the right.
+  local spacer = row.add({ type = "empty-widget" })
+  spacer.style.horizontally_stretchable = true
+
+  -- Which train is being called right now: on a multi module the active FIFO
+  -- request names the resource whose train is summoned. Show its icon next to the
+  -- dot (empty when idle / not a multi). Updated in place each tick.
+  local act = row.add({ type = "label", name = "stc2-ov-active-" .. un, caption = ov_active_caption(state),
+    tooltip = { "stc2-gui.ov-active" } })
+  act.style.minimal_width = 20
+
+  -- Station-call dot: green when calling a train, red on error, grey otherwise.
+  local dot, tip = ov_call_dot(state)
+  row.add({ type = "sprite", name = "stc2-ov-dot-" .. un, sprite = dot, tooltip = tip,
+    style_mods = { size = 16, stretch_image_to_widget_size = true } })
+end
+
+-- Update only the volatile bits of an existing row in place (fill bar values and
+-- the call dot), WITHOUT destroying the row or its wagon picker. Called every tick
+-- while open, so it must never touch the choose-elem-button. The per-probe icons
+-- and the probe count are structural -> a change there bumps the signature and
+-- triggers a full rebuild instead.
+local function ov_update_row(row, entry)
+  local state, un = entry.state, entry.un
+  local bars = row["stc2-ov-bars-" .. un]
+  if bars and bars.valid then
+    local view = ov_bars_view(state)
+    for i, e in ipairs(view) do
+      local col = bars["stc2-ov-col-" .. un .. "-" .. i]
+      local pb  = col and col.valid and col["stc2-ov-bar-" .. un .. "-" .. i]
+      if pb and pb.valid then
+        pb.value = e.ratio
+        pb.style.color = ov_bar_color(e.ratio)
+      end
+    end
+  end
+  local act = row["stc2-ov-active-" .. un]
+  if act and act.valid then act.caption = ov_active_caption(state) end
+  local dot = row["stc2-ov-dot-" .. un]
+  if dot and dot.valid then
+    local sprite, tip = ov_call_dot(state)
+    dot.sprite = sprite
+    dot.tooltip = tip
+  end
+end
+
+-- A stable signature of the rows currently displayed. When it changes (module
+-- added/removed, probe count changed, a probe's resource changed, direction or
+-- storage flag flipped), the list is rebuilt; otherwise a cheap in-place value
+-- update is enough. Includes everything ov_add_row lays out structurally.
+local function ov_signature(modules)
+  local parts = {}
+  for _, e in ipairs(modules) do
+    local view = ov_bars_view(e.state)
+    local names = {}
+    for _, p in ipairs(view) do names[#names + 1] = p.name or "-" end
+    parts[#parts + 1] = e.un .. ":" .. (e.state.direction or "") .. ":"
+      .. (e.state.storage and "s" or "") .. ":" .. table.concat(names, ",")
+  end
+  return table.concat(parts, "|")
+end
+
+-- Refresh the list: rebuild it only when the displayed set/shape changed (so an
+-- open wagon picker and the scroll position survive the per-tick refresh);
+-- otherwise update the volatile fields of the existing rows in place.
+local function ov_populate(player)
+  local win = player.gui.screen[OVERVIEW]
+  if not (win and win.valid) then return end
+  local list = win["stc2-ov-body"]["stc2-ov-cols"]["stc2-ov-right"][OV_LIST]
+  if not (list and list.valid) then return end
+  local f = ov_filters(player.index)
+  local modules = ov_filtered_modules(f)
+  local sig = ov_signature(modules)
+
+  if storage.overview_sig[player.index] == sig and list["stc2-ov-row-" .. (modules[1] and modules[1].un or 0)] then
+    for _, entry in ipairs(modules) do
+      local row = list["stc2-ov-row-" .. entry.un]
+      if row and row.valid then ov_update_row(row, entry) end
+    end
+    return
+  end
+
+  storage.overview_sig[player.index] = sig
+  list.clear()
+  if #modules == 0 then
+    list.add({ type = "label", caption = { "stc2-gui.ov-empty" } })
+    return
+  end
+  for _, entry in ipairs(modules) do ov_add_row(list, entry) end
+end
+
+-- Which picker the resource filter shows, driven by the Type filter above: "item"
+-- when Type=Solid, "fluid" when Type=Liquid, "none" when Type=All (no strictly
+-- typed picker can exclude virtual signals for a mixed set, so the picker is hidden
+-- until the player narrows the type).
+local function ov_res_picker_kind(f)
+  if f.type == "fluid" then return "fluid" end
+  if f.type == "item"  then return "item"  end
+  return "none"
+end
+
+-- Preselect value for the item picker (nil unless the stored resource is an item).
+local function ov_res_item_value(f)
+  return (f.resource and prototypes.item[f.resource]) and { name = f.resource, quality = "normal" } or nil
+end
+
+-- Preselect value for the fluid picker (nil unless the stored resource is a fluid).
+local function ov_res_fluid_value(f)
+  return (f.resource and prototypes.fluid[f.resource]) and f.resource or nil
+end
+
+local function build_overview_gui(player)
+  destroy_win(player, OVERVIEW)
+  local f = ov_filters(player.index)
+
+  local function radio_row(parent_children, name, options, current, cap_prefix)
+    local flow = { type = "flow", name = name, direction = "vertical",
+      style_mods = { vertical_spacing = 2 } }
+    for _, opt in ipairs(options) do
+      flow[#flow + 1] = { type = "radiobutton", name = name .. "-" .. opt, state = (current == opt),
+        caption = { cap_prefix .. opt } }
+    end
+    parent_children[#parent_children + 1] = flow
+  end
+
+  local left_children = {}
+  left_children[#left_children + 1] = { type = "label", style = "caption_label", caption = { "stc2-gui.ov-f-type" } }
+  radio_row(left_children, OV_F_TYPE, OV_TYPES, f.type, "stc2-gui.ov-type-")
+  left_children[#left_children + 1] = { type = "line" }
+  left_children[#left_children + 1] = { type = "label", style = "caption_label", caption = { "stc2-gui.ov-f-res" } }
+  -- Resource picker, shown ONLY once a Type is chosen (Solid -> item picker,
+  -- Liquid -> fluid picker). With Type=All there is no single strictly-typed picker
+  -- that excludes virtual signals, so we hide it and prompt to pick a type first.
+  -- Empty picker = all resources of that type.
+  local rkind = ov_res_picker_kind(f)
+  if rkind == "item" or rkind == "fluid" then
+    left_children[#left_children + 1] = { type = "flow", direction = "horizontal",
+      style_mods = { vertical_align = "center", horizontal_spacing = 6 },
+      { type = "choose-elem-button", name = OV_F_RES,
+        elem_type = (rkind == "item") and "item-with-quality" or "fluid",
+        elem_value = (rkind == "item") and ov_res_item_value(f) or ov_res_fluid_value(f) },
+      { type = "label", caption = { "stc2-gui.ov-res-hint" }, style_mods = { font_color = { 0.7, 0.7, 0.7 } } },
+    }
+  else
+    left_children[#left_children + 1] = { type = "label", caption = { "stc2-gui.ov-res-pick-type" },
+      style_mods = { font_color = { 0.6, 0.6, 0.6 }, single_line = false, maximal_width = 170 } }
+  end
+  left_children[#left_children + 1] = { type = "line" }
+  left_children[#left_children + 1] = { type = "label", style = "caption_label", caption = { "stc2-gui.ov-f-dir" } }
+  radio_row(left_children, OV_F_DIR, OV_DIRS, f.direction, "stc2-gui.ov-dir-")
+  left_children[#left_children + 1] = { type = "line" }
+  left_children[#left_children + 1] = { type = "label", style = "caption_label", caption = { "stc2-gui.ov-f-store" } }
+  radio_row(left_children, OV_F_STORE, OV_STORES, f.storage, "stc2-gui.ov-store-")
+
+  -- A frame can't carry vertical_spacing (that is a Flow/Table style prop); wrap
+  -- the filter controls in a vertical flow inside the frame instead.
+  local left_flow = { type = "flow", name = "stc2-ov-left-flow", direction = "vertical",
+    style_mods = { vertical_spacing = 6 } }
+  for _, c in ipairs(left_children) do left_flow[#left_flow + 1] = c end
+  local left = { type = "frame", name = "stc2-ov-left", style = "inside_shallow_frame_with_padding",
+    direction = "vertical", style_mods = { width = 190 },
+    left_flow }
+
+  flib_gui.add(player.gui.screen, {
+    {
+      type = "frame", name = OVERVIEW, direction = "vertical",
+      style_mods = { maximal_height = 760 },
+      { -- titlebar
+        type = "flow", style = "flib_titlebar_flow", drag_target = OVERVIEW,
+        { type = "label", style = "frame_title", caption = { "stc2-gui.ov-title" }, ignored_by_interaction = true },
+        { type = "empty-widget", style = "flib_titlebar_drag_handle", ignored_by_interaction = true },
+        { type = "sprite-button", name = OV_CLOSE, style = "frame_action_button", sprite = "utility/close" },
+      },
+      {
+        type = "frame", name = "stc2-ov-body", style = "inside_shallow_frame", direction = "vertical",
+        style_mods = { padding = 8 },
+        {
+          type = "flow", name = "stc2-ov-cols", direction = "horizontal",
+          style_mods = { horizontal_spacing = 8 },
+          left,
+          {
+            type = "frame", name = "stc2-ov-right", style = "deep_frame_in_shallow_frame",
+            direction = "vertical", style_mods = { width = 620 },
+            {
+              type = "scroll-pane", name = OV_LIST, direction = "vertical",
+              horizontal_scroll_policy = "never", vertical_scroll_policy = "auto",
+              style_mods = { padding = 6, vertically_stretchable = true, minimal_height = 300 },
+            },
+          },
+        },
+      },
+    },
+  })
+
+  local win = player.gui.screen[OVERVIEW]
+  storage.overview_guis[player.index] = true
+  ov_populate(player)
+  -- Grow the window with the module count (no native drag-resize in 2.0): cap at
+  -- ~88% of the player's screen height; the scroll-pane takes over beyond that.
+  local res = player.display_resolution
+  local scale = player.display_scale or 1
+  local screen_h = res and (res.height / scale) or 900
+  win.style.maximal_height = math.floor(screen_h * 0.88)
+  win.force_auto_center()
+  player.opened = win  -- let ESC close it (the wagon picker's own picker is handled in on_gui_closed)
+end
+
+local function close_overview(player)
+  storage.overview_guis[player.index] = nil
+  storage.overview_sig[player.index] = nil  -- next open rebuilds from scratch
+  destroy_win(player, OVERVIEW)
+end
+
+local function toggle_overview(player)
+  ensure_storage()
+  if player.gui.screen[OVERVIEW] then
+    close_overview(player)
+  else
+    build_overview_gui(player)
+  end
+end
+
+-- ===========================================================================
 -- GUI events
 -- ===========================================================================
 local function close_gui(player)
@@ -1555,7 +2026,20 @@ script.on_event(defines.events.on_gui_closed, function(event)
   elseif event.element.name == TYPEDWIN then
     storage.typed_guis[player.index] = nil
     destroy_win(player, TYPEDWIN)
+  elseif event.element.name == OVERVIEW then
+    close_overview(player)
   end
+end)
+
+-- Open / toggle the overview from the shortcut-bar button or the custom key.
+script.on_event(defines.events.on_lua_shortcut, function(event)
+  if event.prototype_name ~= "stc2-open-overview" then return end
+  local player = game.get_player(event.player_index)
+  if player then toggle_overview(player) end
+end)
+script.on_event("stc2-open-overview", function(event)
+  local player = game.get_player(event.player_index)
+  if player then toggle_overview(player) end
 end)
 
 -- Remember where the player drags the secondary windows, so they reopen in place
@@ -1570,6 +2054,22 @@ end)
 
 script.on_event(defines.events.on_gui_click, function(event)
   local name = event.element.name
+  -- Overview: close button, or a per-row "eye" (focus module + open its GUI).
+  if name == OV_CLOSE then
+    local player = game.get_player(event.player_index)
+    if player then close_overview(player) end
+    return
+  elseif name:sub(1, #OV_EYE) == OV_EYE then
+    local player = game.get_player(event.player_index)
+    local un = tonumber(name:sub(#OV_EYE + 1))
+    local state = un and storage.mains[un]
+    if player and state and state.entity and state.entity.valid then
+      close_overview(player)
+      player.centered_on = state.entity   -- focus the module (handles other surfaces)
+      player.opened = state.entity         -- open its GUI via on_gui_opened
+    end
+    return
+  end
   if name == CLOSE then
     local player = game.get_player(event.player_index)
     if player then player.opened = nil end -- triggers on_gui_closed
@@ -1638,6 +2138,7 @@ end)
 
 script.on_event(defines.events.on_gui_selection_state_changed, function(event)
   local player = game.get_player(event.player_index)
+  if not player then return end
   local state  = gui_state(event)
   if not (player and state) then return end
   if event.element.name == PRIO_DD then
@@ -1653,6 +2154,41 @@ end)
 script.on_event(defines.events.on_gui_elem_changed, function(event)
   local player = game.get_player(event.player_index)
   if not player then return end
+  -- Overview: resource filter picker (item when Type=Solid, fluid when Type=Liquid).
+  -- Empty value = all resources of that type.
+  if event.element.name == OV_F_RES then
+    local v = event.element.elem_value
+    local f = ov_filters(player.index)
+    f.resource = v and (type(v) == "table" and v.name or v) or nil
+    storage.overview_sig[player.index] = nil  -- filter changed -> force a full rebuild
+    ov_populate(player)
+    local win = player.gui.screen[OVERVIEW]
+    if win and win.valid then player.opened = win end  -- restore ESC-to-close
+    return
+  end
+  -- Overview: inline wagon picker on a module row (the only editable control).
+  if event.element.name:sub(1, #OV_WAGON) == OV_WAGON then
+    local un = tonumber(event.element.name:sub(#OV_WAGON + 1))
+    local state = un and storage.mains[un]
+    if state then
+      local v = event.element.elem_value
+      state.wagon_type    = v and v.name or nil
+      state.wagon_quality = v and v.quality or "normal"
+      refresh(state)
+      -- Picking in the choose-elem-button stole player.opened from the overview;
+      -- restore it so ESC still closes the overview.
+      local win = player.gui.screen[OVERVIEW]
+      if win and win.valid then player.opened = win end
+      -- If this module's GUI is open for some player, keep it in sync.
+      for pi, gun in pairs(storage.guis) do
+        if gun == un then
+          local p = game.get_player(pi)
+          if p and p.valid then update_open(p, state) end
+        end
+      end
+    end
+    return
+  end
   -- typed-probe resource picker (its own window, no main state). Item OR fluid,
   -- mutually exclusive: picking one clears the other.
   if event.element.name == TYPED_ELEM or event.element.name == TYPED_FLUID then
@@ -1803,9 +2339,46 @@ script.on_event(defines.events.on_gui_text_changed, function(event)
   refresh_and_update(player, state)
 end)
 
+-- Overview filter radio groups: name is "<group>-<option>". Selecting one clears
+-- the group's siblings, updates the filter, and repopulates the list.
+local OV_RADIO_GROUPS = {
+  [OV_F_TYPE]  = { options = OV_TYPES,  key = "type" },
+  [OV_F_DIR]   = { options = OV_DIRS,   key = "direction" },
+  [OV_F_STORE] = { options = OV_STORES, key = "storage" },
+}
+
 script.on_event(defines.events.on_gui_checked_state_changed, function(event)
   local player = game.get_player(event.player_index)
-  local state  = gui_state(event)
+  if not player then return end
+  -- Overview filter radios first (no main state involved).
+  local nm = event.element.name
+  for group, def in pairs(OV_RADIO_GROUPS) do
+    if nm:sub(1, #group + 1) == group .. "-" then
+      local chosen = nm:sub(#group + 2)
+      local win = player.gui.screen[OVERVIEW]
+      local col = win and win["stc2-ov-body"]["stc2-ov-cols"]["stc2-ov-left"]["stc2-ov-left-flow"]
+      local flow = col and col[group]
+      if flow then
+        for _, opt in ipairs(def.options) do
+          local rb = flow[group .. "-" .. opt]
+          if rb then rb.state = (opt == chosen) end
+        end
+      end
+      local f = ov_filters(player.index)
+      f[def.key] = chosen
+      storage.overview_sig[player.index] = nil  -- filter changed -> force a full rebuild
+      if group == OV_F_TYPE then
+        -- The resource picker's kind depends on Type (and the item/fluid switch is
+        -- only shown for Type=all); rebuild the whole window to reshape the left column.
+        f.resource = nil
+        build_overview_gui(player)
+      else
+        ov_populate(player)
+      end
+      return
+    end
+  end
+  local state = gui_state(event)
   if not (player and state) then return end
   if event.element.name == LINK_LIM then
     state.link_train_count = event.element.state
@@ -1855,6 +2428,17 @@ script.on_nth_tick(SUBTICK, function(event)
       reposition_secondaries(player)  -- keep glued (self-correcting, fixes first-open placement)
     else
       storage.guis[player_index] = nil
+    end
+  end
+
+  -- Refresh the overview list for anyone who has it open (fill bars + call dot
+  -- evolve). state.eval / trains_call are kept fresh by the mains loop above.
+  for player_index in pairs(storage.overview_guis) do
+    local player = game.get_player(player_index)
+    if player and player.valid and player.gui.screen[OVERVIEW] then
+      ov_populate(player)
+    else
+      storage.overview_guis[player_index] = nil
     end
   end
 end)

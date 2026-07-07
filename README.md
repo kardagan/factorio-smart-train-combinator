@@ -87,6 +87,28 @@ before the next fluid train.
 - Blueprint, copy/paste and parametrization support.
 - English and French locale. **Nullius** and **Ultracube** compatible.
 
+## Overview screen
+
+A game-wide screen listing **every** Smart Train Combinator module in your save, so you can review and
+tune them all from one place. Open it with the shortcut-bar button or the customizable key
+(**Ctrl + Alt + T** by default).
+
+![Modules overview screen](docs/overview.png)
+
+Each row shows, from left to right:
+
+- an **eye** button — closes the overview, jumps the view to that module and opens its window;
+- the **direction** arrow (load / unload) and, for storage-flagged modules, the **warehouse** icon;
+- the **wagon type**, editable inline (the only thing you can change from this screen);
+- the **fill bars** — one bar over its resource icon. A single module shows one bar per wagon; a
+  multi-resource module shows one bar per requested resource (its aggregate fill), so all tracked
+  goods are visible at once;
+- the resource whose **train is being called** right now (multi module), next to
+- the **station-call indicator**: green = calling a train, red = misconfigured, grey = idle.
+
+The left column filters the list by **type** (solid / liquid), **resource** (a picker that appears
+once a type is chosen), **direction** and the **storage** flag.
+
 ## Entities
 
 | Entity | Footprint | Role |

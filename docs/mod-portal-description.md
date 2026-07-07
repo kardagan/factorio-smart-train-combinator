@@ -57,6 +57,14 @@ Best for **many resources**, and the way to do **multiple fluids** (each fluid g
 - Blueprint, copy/paste and parametrization support.
 - English and French locale. **Nullius** and **Ultracube** compatible.
 
+## Overview screen
+
+A game-wide screen listing **every** Smart Train Combinator module in your save, so you can review and tune them all from one place. Open it with the shortcut-bar button or the customizable key (**Ctrl + Alt + T** by default).
+
+![Modules overview screen](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/overview.png)
+
+Each row shows an **eye** button (jump to the module and open it), the **direction** arrow and, for storage stops, a **warehouse** icon, the **wagon type** (editable inline — the only thing you can change here), the **fill bars** (one bar per wagon on a single module, one bar per requested resource on a multi module, each over its resource icon), the resource whose **train is being called** right now, and a **station-call indicator** (green = calling, red = misconfigured, grey = idle). The left column filters by **type**, **resource**, **direction** and the **storage** flag.
+
 ## Entities
 
 | Entity | Footprint | Role |

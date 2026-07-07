@@ -264,6 +264,37 @@ data:extend({
   },
 })
 
+-- ---------------------------------------------------------------------------
+-- Global overview screen: a shortcut-bar button + a customizable key open a
+-- window listing every STC module in the game (config, wagon, per-probe fill,
+-- station-call state) with filters. The eye button on each row focuses the
+-- module and opens its GUI.
+-- ---------------------------------------------------------------------------
+data:extend({
+  -- The per-row "eye" button uses a guaranteed utility sprite at runtime
+  -- (utility/search_icon), so no custom sprite prototype is needed here.
+  -- Customizable key (defaults to CTRL + ALT + T) opening the overview.
+  {
+    type          = "custom-input",
+    name          = "stc2-open-overview",
+    key_sequence  = "CONTROL + ALT + T",
+    action        = "lua",
+  },
+  -- Shortcut-bar button. Uses the multi module's cyan art as the recognizable
+  -- STC glyph; icon_size 256 matches the source image (Factorio downscales it).
+  {
+    type                  = "shortcut",
+    name                  = "stc2-open-overview",
+    action                = "lua",
+    associated_control_input = "stc2-open-overview",
+    toggleable            = false,
+    icon                  = "__smart-train-combinator__/graphics/main-multi-2x2.png",
+    icon_size             = 256,
+    small_icon            = "__smart-train-combinator__/graphics/main-multi-2x2.png",
+    small_icon_size       = 256,
+  },
+})
+
 -- Virtual signals so the load/unload icon can be embedded in train-stop names
 -- (rich text can reference [virtual-signal=...] but not custom sprite prototypes).
 data:extend({
