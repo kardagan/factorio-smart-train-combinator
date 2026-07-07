@@ -1,4 +1,32 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.2.0
+Date: 2026-07-07
+  Features:
+    - New global overview screen listing every Smart Train Combinator module in the game. Open it with
+      the shortcut-bar button or the customizable key (default CTRL + ALT + T). Each row shows a
+      load/unload arrow (and a warehouse icon for storage stops), an inline-editable wagon-type picker,
+      a fill bar over each resource's icon (one bar per wagon on a single module, one bar per requested
+      resource on a multi module), the resource whose train is being called right now, and a
+      station-call indicator (green calling, red on error, grey idle). A left filter column narrows the
+      list by type (solid/liquid), resource (a picker that appears once a type is chosen), direction
+      (load/unload), and storage flag. An "eye" button on each row closes the overview, focuses the
+      module, and opens its interface.
+  Bugfixes:
+    - The base module window is now wide enough that its close (X) button is always visible. With the
+      longer localized title the four titlebar buttons overflowed the fixed width and pushed the X out
+      of the frame; the single-good window is now 416 px wide (the glued side panels follow along).
+    - Removed the space in the auto-generated train-stop name (between the resource/storage icons and
+      the arrow/wagons), so the icons sit flush.
+    - The wagon icon in the auto-generated train-stop name now uses the wagon's ITEM tag ([item=...])
+      instead of its entity tag ([entity=...]). The two render identically, but the rich-text icon
+      picker (used when building a train interrupt by hand) inserts the item form; since station
+      matching is an exact string compare, a hand-built interrupt now targets the auto-name correctly.
+      NOTE: this changes the generated name, so re-point any existing hand-made interrupts that relied
+      on the old [entity=...] form (or copy the station's current name).
+  Changes:
+    - New single-good modules now default to auto-renaming the station (both naming checkboxes ticked
+      by default). Existing modules keep their current setting.
+---------------------------------------------------------------------------------------------------
 Version: 1.0.2
 Date: 2026-07-05
   Bugfixes:
