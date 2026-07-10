@@ -19,6 +19,7 @@ local MAIN  = "smart-train-combinator"
 local MULTI = "stc-multi"
 local PROBE = "stc2-buffer-probe"
 local TYPED = "stc-typed-probe"  -- resource-pinned probe (multi "independent buffer" mode)
+local POWER = "stc2-power"       -- hidden always-on consumer glued onto each main
 
 local MAX_GOODS = 10  -- multi-resource module: max simultaneously tracked goods
 
@@ -38,13 +39,19 @@ local ITEM_STORAGE_TYPES = {
 }
 
 local W = defines.wire_connector_id
+-- One group per wire COLOUR. The network walk runs one BFS per group and unions
+-- the results, so it never hops from a red wire to a green one through an
+-- entity: a green wire between two red networks belongs to whoever owns that
+-- green network, it is NOT a bridge. This matches Factorio's own semantics
+-- (an entity is wired to the main iff it shares a red OR green circuit
+-- network with it).
 local LEASH_CONNECTORS = {
-  W.circuit_red, W.circuit_green,
-  W.combinator_output_red, W.combinator_output_green,
+  { W.circuit_red,   W.combinator_output_red },
+  { W.circuit_green, W.combinator_output_green },
 }
 local INPUT_CONNECTORS = {
-  W.combinator_input_red, W.combinator_input_green,
-  W.circuit_red, W.circuit_green,
+  { W.combinator_input_red,   W.circuit_red },
+  { W.combinator_input_green, W.circuit_green },
 }
 
 -- GUI element names. Three windows:
@@ -267,21 +274,28 @@ end
 -- ===========================================================================
 -- Circuit traversal
 -- ===========================================================================
-local function walk_network(entity, connector_ids)
-  local found, seen = {}, {}
-  seen[entity.unit_number] = true
-  local queue = { entity }
-  while #queue > 0 do
-    local node = table.remove(queue)
-    for _, cid in pairs(connector_ids) do
-      local connector = node.get_wire_connector(cid, false)
-      if connector then
-        for _, conn in pairs(connector.connections) do
-          local target = conn.target and conn.target.owner
-          if target and target.valid and not seen[target.unit_number] then
-            seen[target.unit_number] = true
-            table.insert(found, target)
-            table.insert(queue, target)
+local function walk_network(entity, connector_groups)
+  local found, found_set = {}, {}
+  for _, connector_ids in pairs(connector_groups) do
+    -- `seen` is per colour: an entity already found via red must still relay
+    -- the green pass (and vice versa), only `found` is deduplicated.
+    local seen = { [entity.unit_number] = true }
+    local queue = { entity }
+    while #queue > 0 do
+      local node = table.remove(queue)
+      for _, cid in pairs(connector_ids) do
+        local connector = node.get_wire_connector(cid, false)
+        if connector then
+          for _, conn in pairs(connector.connections) do
+            local target = conn.target and conn.target.owner
+            if target and target.valid and not seen[target.unit_number] then
+              seen[target.unit_number] = true
+              if not found_set[target.unit_number] then
+                found_set[target.unit_number] = true
+                table.insert(found, target)
+              end
+              table.insert(queue, target)
+            end
           end
         end
       end
@@ -304,6 +318,47 @@ local function discover(state)
   state.probes       = probes
   state.typed_probes = typed
   state.stops        = stops
+end
+
+-- A train stop must be driven by exactly ONE main. Walked from the stop's side
+-- (both colours), so every main wired to a contested stop sees the conflict —
+-- including when the two mains reach it through different wire colours.
+local function stops_conflict(state)
+  for _, stop in pairs(state.stops or {}) do
+    if stop.valid then
+      local mains = 0
+      for _, e in pairs(walk_network(stop, LEASH_CONNECTORS)) do
+        if e.name == MAIN or e.name == MULTI then mains = mains + 1 end
+      end
+      if mains >= 2 then return true end
+    end
+  end
+  return false
+end
+
+-- The main's power tap: a hidden always-on consumer glued onto the main (a
+-- constant combinator can't draw power by itself). Created on build, and
+-- recreated on demand here so mains from saves made before this feature pick
+-- one up on their next refresh.
+local function ensure_power(state)
+  local p = state.power
+  if p and p.valid then return p end
+  local e = state.entity
+  p = e.surface.find_entities_filtered({ name = POWER, position = e.position, radius = 0.5 })[1]
+      or e.surface.create_entity({ name = POWER, position = e.position, force = e.force })
+  if p then p.destructible = false end
+  state.power = p
+  return p
+end
+
+-- True if any wired probe (generic or typed) has an empty energy buffer.
+local function probes_unpowered(state)
+  for _, list in pairs({ state.probes, state.typed_probes }) do
+    for _, p in pairs(list or {}) do
+      if p.valid and p.energy == 0 then return true end
+    end
+  end
+  return false
 end
 
 -- ===========================================================================
@@ -845,6 +900,37 @@ local function refresh(state)
   local has_gen   = #(state.probes or {}) > 0
   local has_typed = #(state.typed_probes or {}) > 0
 
+  -- Power first: a dead brain can't compute anything. The hidden tap draws the
+  -- main's power (and paints the vanilla no-electricity icon on it); the probes
+  -- are electric on their own. Either one out -> report and request 0 trains
+  -- (the L=0 output still reaches the stop, so no train gets called).
+  local power = ensure_power(state)
+  if power and power.energy == 0 then
+    state.error = "no-power"
+    state.eval, state.eval_multi = blank_eval(), { per_good = {} }
+    state.trains_call = 0
+    write_output(state); drive_station(state)
+    return
+  end
+  if probes_unpowered(state) then
+    state.error = "probe-no-power"
+    state.eval, state.eval_multi = blank_eval(), { per_good = {} }
+    state.trains_call = 0
+    write_output(state); drive_station(state)
+    return
+  end
+
+  -- A wired stop shared with another main: both mains flag the error, request
+  -- 0 trains and DON'T drive the stop (renaming/limiting it from two brains at
+  -- once is the very fight we're preventing).
+  if stops_conflict(state) then
+    state.error = "stop-conflict"
+    state.eval, state.eval_multi = blank_eval(), { per_good = {} }
+    state.trains_call = 0
+    write_output(state)
+    return
+  end
+
   if is_multi(state) then
     -- The multi module always drives the stop by name + train-limit (L is 0/1),
     -- and only ever UNLOADS (it requests inbound resources).
@@ -944,6 +1030,12 @@ local function update_base(player, state)
     icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-mix" }; return
   elseif state.error == "typed-on-single" then
     icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-typed" }; return
+  elseif state.error == "stop-conflict" then
+    icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-stop-conflict" }; return
+  elseif state.error == "no-power" then
+    icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-no-power" }; return
+  elseif state.error == "probe-no-power" then
+    icon_el.sprite = "flib_indicator_red"; label_el.caption = { "stc2-gui.status-err-probe-power" }; return
   end
 
   local typed = multi and state.typed_mode
@@ -2457,6 +2549,7 @@ local function on_built(event)
       read_tracked_signal(st)  -- a parametrized blueprint substitutes the resource here
     end
     storage.mains[e.unit_number] = st
+    ensure_power(st)
   elseif e.name == TYPED then
     local r = event.tags and event.tags.stc2_typed
     storage.typed[e.unit_number] = (type(r) == "table" and r.name) and { name = r.name, quality = r.quality, fluid = r.fluid } or {}
@@ -2468,6 +2561,10 @@ local function on_removed(event)
   local e = event.entity
   if e and e.valid then
     if e.name == MAIN or e.name == MULTI then
+      local st = storage.mains[e.unit_number]
+      local tap = (st and st.power and st.power.valid) and st.power
+        or e.surface.find_entities_filtered({ name = POWER, position = e.position, radius = 0.5 })[1]
+      if tap then tap.destroy() end
       storage.mains[e.unit_number] = nil
     elseif e.name == TYPED then
       storage.typed[e.unit_number] = nil
@@ -2554,6 +2651,7 @@ script.on_event(defines.events.on_entity_cloned, function(event)
   local ss = storage.mains[src.unit_number]
   if ss then apply_config(st, config_of(ss)) end
   storage.mains[dst.unit_number] = st
+  ensure_power(st)  -- adopts an area-cloned tap if one landed here, else creates one
 end)
 
 -- ===========================================================================

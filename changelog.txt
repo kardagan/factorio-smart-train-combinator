@@ -1,4 +1,29 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.2.1
+Date: 2026-07-10
+  Features:
+    - The main units now draw power (10 kW, via an invisible consumer glued onto the module — the
+      constant-combinator base can't have an energy source of its own). A main without electricity
+      shows the vanilla "no power" alert icon, reports the outage in its window and requests zero
+      trains. Probes already consumed power but an unpowered probe used to be silently ignored (the
+      script reads the wires directly, which works without electricity): a wired probe without power
+      now also puts its main in error with zero trains requested, instead of pretending all is fine.
+  Bugfixes:
+    - Circuit-network discovery no longer crosses wire colours. The walk used to hop from a red wire
+      to a green one through any entity on the way, so e.g. a green wire between the buffer tanks of
+      two independent red-wired setups silently merged both networks: each main discovered the other
+      main's probes and station and the station names alternated between the two resources. Each wire
+      colour is now walked as its own network (matching the game's own circuit-network semantics), for
+      both the main's discovery leash and the probes' buffer scan.
+    - A train stop wired to more than one main unit (through any wire colour) is now a detected error:
+      every main sharing the stop shows a red status ("train stop wired to more than one main unit"),
+      requests zero trains and stops driving the stop (no renaming, no train-limit control) until the
+      extra wire is removed. Previously the mains silently fought over the stop's name and limit.
+  Changes:
+    - The resource-type wording now matches the game's own terminology: "Item / Fluid" ("Objet /
+      Fluide" in French) instead of "Solid / Liquid" — fluids include gases, which "Liquid" wrongly
+      excluded. Applies to the module's type switch and the overview's type filter.
+---------------------------------------------------------------------------------------------------
 Version: 1.2.0
 Date: 2026-07-07
   Features:

@@ -106,7 +106,7 @@ Each row shows, from left to right:
 - the resource whose **train is being called** right now (multi module), next to
 - the **station-call indicator**: green = calling a train, red = misconfigured, grey = idle.
 
-The left column filters the list by **type** (solid / liquid), **resource** (a picker that appears
+The left column filters the list by **type** (item / fluid), **resource** (a picker that appears
 once a type is chosen), **direction** and the **storage** flag.
 
 ## Entities

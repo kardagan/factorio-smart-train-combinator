@@ -140,11 +140,45 @@ typed.sprites = {
 typed.icon, typed.icon_size = nil, nil
 typed.icons = { { icon = TPROBE_ICON, icon_size = 64 } }
 
+-- ---------------------------------------------------------------------------
+-- POWER TAP ("stc2-power"): invisible always-on consumer glued onto each main
+-- by the runtime. A constant combinator can't have an energy source, so this
+-- is what makes the brain actually draw power - and what shows the vanilla
+-- "no electricity" alert icon at the main's position when the grid is down.
+-- Unbuildable/unselectable: purely a runtime child entity.
+-- ---------------------------------------------------------------------------
+local POWER = "stc2-power"
+
+local power = table.deepcopy(data.raw["lamp"]["small-lamp"])
+power.name                   = POWER
+power.hidden                 = true
+power.flags = { "not-blueprintable", "not-deconstructable", "not-upgradable",
+                "not-on-map", "placeable-off-grid", "hide-alt-info" }
+power.minable                = nil
+power.next_upgrade           = nil
+power.fast_replaceable_group = nil
+power.selectable_in_game     = false
+power.collision_box          = { { 0, 0 }, { 0, 0 } }
+power.collision_mask         = { layers = {} }
+power.picture_on             = util.empty_sprite()
+power.picture_off            = util.empty_sprite()
+power.light                  = nil
+power.light_when_colored     = nil
+power.signal_to_color_mapping = nil
+power.always_on              = true
+power.energy_usage_per_tick  = "10kW"
+power.circuit_wire_max_distance = 0
+power.corpse                 = nil
+power.dying_explosion        = nil
+power.icon, power.icon_size  = nil, nil
+power.icons = { { icon = MAIN_SPRITE, icon_size = 256 } }
+
 data:extend({
   main,
   typed,
   multi,
   probe,
+  power,
 
   -- Items
   {
