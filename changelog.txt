@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.4.0
+Date: 2026-07-12
+  Features:
+    - The main and multi-resource units now draw their own in-world overlay, shown in alt-mode: the
+      tracked resource icon and a load/unload arrow over the combinator, on a small dark background.
+      This replaces the bare "L"/"P" output-signal icons Factorio used to show (the constant-
+      combinator's native alt-info is now hidden). The multi-resource unit shows the resource it is
+      currently requesting and falls back to its first configured resource while idle, so the badge
+      never goes blank.
+---------------------------------------------------------------------------------------------------
 Version: 1.2.1
 Date: 2026-07-10
   Features:

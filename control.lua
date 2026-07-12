@@ -737,6 +737,94 @@ local function compute_priority(state)
 end
 
 -- ===========================================================================
+-- In-world overlay (alt-mode)
+-- ===========================================================================
+-- The main is a constant-combinator, so vanilla alt-mode would only show its
+-- bare output signals ("L" = train limit, "P" = priority). We hide that
+-- (hide-alt-info flag, data.lua) and draw our own: the tracked resource icon
+-- and a load/unload arrow, both only_in_alt_mode. Sprites are (re)built only
+-- when the desired picture changes (ov_sig), so the per-tick refresh is cheap.
+-- Overlay layout (tile offsets relative to the entity centre; +y is DOWN).
+-- Tweak these four to reposition/resize the whole badge.
+local OV_Y     = -0.38   -- lift the badge above the body centre (negative = up)
+local OV_DX    = 0.32    -- half the gap between the two icons (smaller = closer)
+local OV_SCALE = 0.42    -- icon size (x_scale = y_scale)
+local OV_BG    = "utility/entity_info_dark_background"
+
+local function clear_overlay(state)
+  if state.ov_bg    and state.ov_bg.valid    then state.ov_bg.destroy()    end
+  if state.ov_icon  and state.ov_icon.valid  then state.ov_icon.destroy()  end
+  if state.ov_arrow and state.ov_arrow.valid then state.ov_arrow.destroy() end
+  state.ov_bg, state.ov_icon, state.ov_arrow = nil, nil, nil
+end
+
+local function update_overlay(state)
+  local e = state.entity
+  if not (e and e.valid) then return end
+
+  -- Tracked resource. state.icon holds the active good; a multi module clears it
+  -- while idle between FIFO dispatches, so fall back to its first configured good
+  -- (state.kind is the multi's type) — the badge should never lose its resource.
+  local icon_name = state.icon
+  if not icon_name and is_multi(state) then
+    -- generic multi keeps its goods in state.goods; the typed multi derives them
+    -- from the wired probes (eval_multi.per_good). Prefer whichever is populated.
+    local g = (state.goods or {})[1]
+    if g and g.name then
+      icon_name = g.name
+    else
+      local pg = state.eval_multi and state.eval_multi.per_good
+      icon_name = pg and pg[1] and pg[1].icon or nil
+    end
+  end
+  -- Guard the path: another mod could have removed the prototype.
+  local icon_sprite
+  if icon_name then
+    local path = (state.kind == KIND.FLUID) and ("fluid/" .. icon_name)
+                                             or  ("item/"  .. icon_name)
+    if helpers.is_valid_sprite_path(path) then icon_sprite = path end
+  end
+  local arrow_sprite = (state.direction == DIRECTION.UNLOAD)
+    and "virtual-signal/stc2-unload" or "virtual-signal/stc2-load"
+
+  -- Only rebuild when the picture actually changed. The layout constants are
+  -- part of the signature too, so tweaking them (+ /reload) forces a redraw
+  -- even though the resource/direction are unchanged.
+  local sig = table.concat({ icon_sprite or "-", arrow_sprite,
+    OV_Y, OV_DX, OV_SCALE, OV_BG }, "|")
+  if sig == state.ov_sig and state.ov_arrow and state.ov_arrow.valid then return end
+  state.ov_sig = sig
+  clear_overlay(state)
+
+  local surface = e.surface
+  -- Dark pill behind the icons (same style as the vanilla alt-info background).
+  -- Drawn first so the icons sit on top of it within the same render layer.
+  if helpers.is_valid_sprite_path(OV_BG) then
+    state.ov_bg = rendering.draw_sprite({
+      sprite = OV_BG, surface = surface,
+      target = { entity = e, offset = { 0, OV_Y } },
+      x_scale = 1.15, y_scale = 0.72,
+      render_layer = "entity-info-icon", only_in_alt_mode = true,
+    })
+  end
+  -- Resource icon on the LEFT, load/unload arrow on the RIGHT, tightly grouped.
+  if icon_sprite then
+    state.ov_icon = rendering.draw_sprite({
+      sprite = icon_sprite, surface = surface,
+      target = { entity = e, offset = { -OV_DX, OV_Y } },
+      x_scale = OV_SCALE, y_scale = OV_SCALE,
+      render_layer = "entity-info-icon", only_in_alt_mode = true,
+    })
+  end
+  state.ov_arrow = rendering.draw_sprite({
+    sprite = arrow_sprite, surface = surface,
+    target = { entity = e, offset = { OV_DX, OV_Y } },
+    x_scale = OV_SCALE, y_scale = OV_SCALE,
+    render_layer = "entity-info-icon", only_in_alt_mode = true,
+  })
+end
+
+-- ===========================================================================
 -- Output + station driving
 -- ===========================================================================
 local function write_output(state)
@@ -757,6 +845,7 @@ local function write_output(state)
     local pv = { type = p.type or "virtual", name = p.name, quality = p.quality or "normal" }
     section.set_slot(2, { value = pv, min = state.current_priority })
   end
+  update_overlay(state)  -- keep the alt-mode overlay in sync with resource/direction
 end
 
 -- Store the tracked good as a signal in an INACTIVE section (#2) of the main.
@@ -2550,6 +2639,7 @@ local function on_built(event)
     end
     storage.mains[e.unit_number] = st
     ensure_power(st)
+    update_overlay(st)  -- show the arrow (and resource, if a blueprint set one) at once
   elseif e.name == TYPED then
     local r = event.tags and event.tags.stc2_typed
     storage.typed[e.unit_number] = (type(r) == "table" and r.name) and { name = r.name, quality = r.quality, fluid = r.fluid } or {}
@@ -2565,6 +2655,7 @@ local function on_removed(event)
       local tap = (st and st.power and st.power.valid) and st.power
         or e.surface.find_entities_filtered({ name = POWER, position = e.position, radius = 0.5 })[1]
       if tap then tap.destroy() end
+      if st then clear_overlay(st) end
       storage.mains[e.unit_number] = nil
     elseif e.name == TYPED then
       storage.typed[e.unit_number] = nil

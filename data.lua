@@ -39,6 +39,10 @@ main.next_upgrade           = nil
 main.fast_replaceable_group  = nil
 main.flags = main.flags or {}
 table.insert(main.flags, "get-by-unit-number")
+-- Hide the vanilla alt-mode signal display (the bare "L"/"P" output-signal
+-- icons): control.lua draws its own richer overlay (tracked resource + a
+-- load/unload arrow) via rendering. Inherited by the MULTI deepcopy below.
+table.insert(main.flags, "hide-alt-info")
 
 -- 2x2 footprint
 main.tile_width    = 2
