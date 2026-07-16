@@ -1,4 +1,14 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.4.1
+Date: 2026-07-16
+  Bugfixes:
+    - Blueprints of a fluid-configured main now carry the tracked fluid. The hidden signal that
+      stores the tracked resource (used by blueprint parametrization and read back on build) was
+      written without a pinned quality for fluids; the game rejects such a filter with a non-zero
+      count, and the guarded write failed silently — so the fluid never reached the blueprint and
+      a rebuilt module lost its resource. The fluid signal is now quality-pinned like items, and
+      the write is no longer silenced.
+---------------------------------------------------------------------------------------------------
 Version: 1.4.0
 Date: 2026-07-12
   Features:

@@ -860,12 +860,12 @@ local function write_tracked_signal(state)
   s.active = false
   s.clear_slot(1)
   if state.icon then
+    -- Like write_output: a slot with a non-zero count needs a quality-pinned
+    -- (trivial) filter — including fluids, whose signal still carries a quality.
     local value = (state.kind == KIND.FLUID)
-      and { type = "fluid", name = state.icon }
+      and { type = "fluid", name = state.icon, quality = "normal" }
       or  { type = "item", name = state.icon, quality = state.icon_quality or "normal" }
-    -- guard: fluids have no quality; if a quality-trivial filter is rejected we
-    -- still keep working (the tag carries the resource as a fallback).
-    pcall(function() s.set_slot(1, { value = value, min = 1 }) end)
+    s.set_slot(1, { value = value, min = 1 })
   end
 end
 
