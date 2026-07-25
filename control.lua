@@ -1095,6 +1095,102 @@ local function refresh(state)
 end
 
 -- ===========================================================================
+-- Public model export (remote interface)
+-- ---------------------------------------------------------------------------
+-- Exposes the distinct train "shapes" a main describes, for other mods (Train
+-- Foundry) to reconstruct a matching schedule. A shape is the tuple that decides
+-- a station name segment: (kind, wagon_type, wagon_quality, wagon count, group).
+-- The RESOURCE is deliberately NOT part of a shape: consumers pick it themselves.
+--
+-- The "group" is the free segment a station name carries between the resource and
+-- the load/unload marker: today it is "" or the storage icon, but it is meant to
+-- generalise to arbitrary custom signals/text later. We return it already rendered
+-- as a string so a consumer never has to interpret it.
+
+-- The group segment for a state's auto-name. v1: derived from the storage flag
+-- (which has no mechanical role in this mod - name only). This is the single seam
+-- to widen when custom group segments land.
+local function group_segment(state)
+  return state.storage and "[virtual-signal=stc2-storage]" or ""
+end
+
+-- Append one shape to `out`, deduped by signature. `wagons` is the wagon count of
+-- that shape (varies per resource on a typed-multi main, constant otherwise).
+local function push_shape(out, seen, state, wagons)
+  if not state.wagon_type then return end          -- no chosen rolling-stock -> no shape
+  if not (wagons and wagons > 0) then return end
+  local group = group_segment(state)
+  local sig = table.concat({ state.kind, state.wagon_type, state.wagon_quality or "normal",
+                             wagons, group }, "\0")
+  if seen[sig] then return end
+  seen[sig] = true
+  out[#out + 1] = {
+    kind          = state.kind,
+    wagon_type    = state.wagon_type,
+    wagon_quality = state.wagon_quality or "normal",
+    wagons        = wagons,
+    group         = group,          -- already-rendered station-name segment; do not interpret
+    storage       = not not state.storage,  -- kept for a readable interrupt label on the consumer side
+  }
+end
+
+-- Collect every distinct shape a single main contributes into `out`.
+--   single       -> 1 shape, #probes wagons
+--   multi shared -> 1 shape, #probes wagons (all goods share the generic probes)
+--   multi typed  -> 1 shape PER resource, #typed-probes-of-that-resource wagons
+--
+-- READ-ONLY: we must not drive stations or write outputs here (this runs when
+-- another mod queries us, not on our tick). So we call discover() for the wire
+-- topology and, for a typed-multi, evaluate_typed() (pure reads) - never
+-- refresh(), which renames stops and writes signals.
+local function collect_models(state, out, seen)
+  if not (state.entity and state.entity.valid) then return end
+  discover(state)  -- refresh probes/typed_probes/stops from the live wire network
+  local has_gen   = #(state.probes or {}) > 0
+  local has_typed = #(state.typed_probes or {}) > 0
+  if is_multi(state) and has_typed and not has_gen then
+    -- purely-typed multi: one shape per typed resource (each has its own wagon
+    -- count). A multi wired with BOTH generic and typed probes is the "mix" error
+    -- state (refresh() requests 0 trains and doesn't drive the stop), so we expose
+    -- no shape for it either - matching the runtime rather than inventing shapes.
+    local em = evaluate_typed(state)  -- pure: reads buffers/prototypes, mutates nothing
+    for _, info in ipairs(em.per_good or {}) do
+      push_shape(out, seen, state, #(info.rows or {}))
+    end
+  elseif not (is_multi(state) and has_typed) then
+    -- single, or shared-buffer multi: all wagons are the generic probes.
+    -- (A mix multi falls through to nothing.)
+    push_shape(out, seen, state, #(state.probes or {}))
+  end
+end
+
+remote.add_interface("smart-train-combinator", {
+  -- Distinct train shapes described by every main on `surface_index`.
+  -- Returns a list of { kind, wagon_type, wagon_quality, wagons, group, storage }.
+  get_models = function(surface_index)
+    ensure_storage()  -- a freshly-loaded save may not have ticked yet
+    local out, seen = {}, {}
+    for _, state in pairs(storage.mains) do
+      if state.entity and state.entity.valid
+         and state.entity.surface.index == surface_index then
+        collect_models(state, out, seen)
+      end
+    end
+    -- Stable, readable order for consumers' pickers: kind (item first), then wagon
+    -- count, then storage, then wagon type. storage.mains iteration order is not
+    -- meaningful on its own.
+    table.sort(out, function(a, b)
+      if a.kind ~= b.kind then return a.kind < b.kind end            -- "fluid" < "item"
+      if a.wagons ~= b.wagons then return a.wagons < b.wagons end
+      if a.storage ~= b.storage then return b.storage end            -- non-storage first
+      if a.wagon_type ~= b.wagon_type then return a.wagon_type < b.wagon_type end
+      return (a.wagon_quality or "") < (b.wagon_quality or "")
+    end)
+    return out
+  end,
+})
+
+-- ===========================================================================
 -- GUI
 -- ===========================================================================
 local function fmt(n) return tostring(math.floor(n)) end
@@ -2772,5 +2868,18 @@ commands.add_command("stc-debug", "Print Smart Train Combinator values for the h
   for i, r in ipairs(ev.rows or {}) do
     player.print(("   wagon %d: stored=%d  cap=%d  loads=%d%s"):format(
       i, r.stored, r.capacity, r.loads, (i == ev.bottleneck_idx) and "   <- min" or ""))
+  end
+end)
+
+-- Exercise the public get_models interface on the caller's surface (the exact
+-- path Train Foundry uses), and print the distinct shapes it returns.
+commands.add_command("stc-models", "List the distinct train shapes get_models exposes for this surface", function(cmd)
+  local player = game.get_player(cmd.player_index)
+  if not player then return end
+  local models = remote.call("smart-train-combinator", "get_models", player.surface.index)
+  player.print(("[STC] get_models -> %d shape(s) on %s"):format(#models, player.surface.name))
+  for i, m in ipairs(models) do
+    player.print(("  #%d  kind=%s wagon=%s(%s) x%d  group=%q  storage=%s"):format(
+      i, m.kind, m.wagon_type, m.wagon_quality, m.wagons, m.group, tostring(m.storage)))
   end
 end)

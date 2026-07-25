@@ -1,4 +1,15 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.5.0
+Date: 2026-07-24
+  Features:
+    - Added a remote interface so other mods can read the train shapes described by the combinators
+      on a surface. remote.call("smart-train-combinator", "get_models", surface_index) returns the
+      distinct shapes as { kind, wagon_type, wagon_quality, wagons, group, storage }, deduplicated
+      by shape (the tracked resource is intentionally excluded — a consumer picks it itself). The
+      "group" is the station-name segment between the resource and the load/unload marker, returned
+      already rendered as a string. Read-only: querying never renames stations or drives outputs.
+    - New /stc-models command: lists the shapes get_models exposes for the player's surface.
+---------------------------------------------------------------------------------------------------
 Version: 1.4.1
 Date: 2026-07-16
   Bugfixes:
