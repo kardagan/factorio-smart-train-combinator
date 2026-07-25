@@ -935,13 +935,21 @@ local function wagon_icon_tag(state)
   return item and ("[item=" .. item .. "]") or ("[entity=" .. state.wagon_type .. "]")
 end
 
+-- Wagon run in the station name. name_wagon_count OFF: a single icon.
+-- ON: up to WAGON_ICON_MAX (5) repeated icons — UNCHANGED historical format, so
+-- existing stations/interrupts keep matching (STC is already published; we must
+-- not break saves). Beyond 5, switch to a compact "icon×N" form: N repeated icons
+-- would otherwise overflow the ~200-char backer_name limit and get truncated
+-- mid-rich-text-tag (raw "[item=nullius-car…"). Consumers must build the SAME string.
+local WAGON_ICON_MAX = 5
 local function wagon_run(state)
   if not state.wagon_type then return "" end
   local tag = wagon_icon_tag(state)
   if not state.name_wagon_count then return tag end
   local n = wagon_count_for(state)
   if n <= 0 then return "" end
-  return string.rep(tag, n)
+  if n <= WAGON_ICON_MAX then return string.rep(tag, n) end
+  return tag .. "×" .. n
 end
 
 -- Build the train-stop name. The arrow colour AND its position relative to the

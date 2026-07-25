@@ -1,6 +1,6 @@
 ---------------------------------------------------------------------------------------------------
-Version: 1.5.0
-Date: 2026-07-24
+Version: 1.6.0
+Date: 2026-07-25
   Features:
     - Added a remote interface so other mods can read the train shapes described by the combinators
       on a surface. remote.call("smart-train-combinator", "get_models", surface_index) returns the
@@ -9,6 +9,10 @@ Date: 2026-07-24
       "group" is the station-name segment between the resource and the load/unload marker, returned
       already rendered as a string. Read-only: querying never renames stations or drives outputs.
     - New /stc-models command: lists the shapes get_models exposes for the player's surface.
+  Changes:
+    - Station auto-name: past 5 wagons the wagon icon is no longer repeated once per wagon (which
+      could overflow the station-name length limit and get truncated mid-rich-text-tag); instead it
+      shows a single icon followed by "×N". Names with 5 wagons or fewer are unchanged.
 ---------------------------------------------------------------------------------------------------
 Version: 1.4.1
 Date: 2026-07-16
