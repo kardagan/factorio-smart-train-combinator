@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.6.1
+Date: 2026-07-26
+  Bugfixes:
+    - No longer crashes when the tracked good resolves to a name the current mod set doesn't know as
+      an item/fluid (e.g. a blueprint parameter substituted with a recipe instead of an item). The
+      hidden tracked-signal slot is now only written for a good whose prototype actually exists;
+      otherwise the station is simply left without a tracked resource until a valid good is chosen.
+---------------------------------------------------------------------------------------------------
 Version: 1.6.0
 Date: 2026-07-25
   Features:

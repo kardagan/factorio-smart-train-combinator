@@ -859,10 +859,17 @@ local function write_tracked_signal(state)
   local s = cb.get_section(2)
   s.active = false
   s.clear_slot(1)
-  if state.icon then
+  -- Only write a good the current mod set still knows about. state.icon can hold a
+  -- name from a blueprint parameter or a save made with a different mod set (item
+  -- renamed/removed); set_slot on an unknown prototype is an unrecoverable error.
+  local is_fluid = (state.kind == KIND.FLUID)
+  local known = state.icon and (is_fluid
+    and prototypes.fluid[state.icon] ~= nil
+    or  prototypes.item[state.icon]  ~= nil)
+  if known then
     -- Like write_output: a slot with a non-zero count needs a quality-pinned
     -- (trivial) filter — including fluids, whose signal still carries a quality.
-    local value = (state.kind == KIND.FLUID)
+    local value = is_fluid
       and { type = "fluid", name = state.icon, quality = "normal" }
       or  { type = "item", name = state.icon, quality = state.icon_quality or "normal" }
     s.set_slot(1, { value = value, min = 1 })
