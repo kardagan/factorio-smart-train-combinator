@@ -81,7 +81,7 @@ Each row shows an **eye** button (jump to the module and open it), the **directi
 3. Open the main and configure: tracked resource(s), wagon type, direction (single module), and the options you want (train limit, auto-naming, priority, enable gate).
 4. For Mode 3, open each **Typed** probe and pin its resource.
 
-The mod ships for both Factorio 2.0 and 2.1 as separate releases (same code, `info.json` only differs) — the mod portal serves the right one for your game.
+The mod targets Factorio 2.1. Support for 2.0 was dropped in 1.8.0; the last 2.0-compatible release is 1.6.1.
 
 ## Credits
 

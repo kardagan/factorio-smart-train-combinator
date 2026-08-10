@@ -1,33 +1,25 @@
 #!/usr/bin/env bash
 #
-# build.sh — packaging Smart Train Combinator pour Factorio 2.0 ET 2.1.
+# build.sh — packaging Smart Train Combinator pour Factorio 2.1.
 #
-# Source unique : le code (control.lua/data*.lua/graphics/locale) est identique
-# pour les deux versions du jeu. Seul info.json change (factorio_version + bornes
-# base/flib + numéro). On dérive donc deux zips d'un même code.
+# Un seul zip : info.json est la source de vérité (version, factorio_version,
+# bornes base/flib) et est embarqué tel quel.
 #
-# Convention de version (le MINOR encode le canal de jeu) :
-#   info.json porte le VRAI semver du mod (ex. 1.0.0) = la release Factorio 2.0.
-#   La release Factorio 2.1 reprend le même code avec le MINOR +1 (ex. 1.1.0).
-#   => minor PAIR (0,2,4...) = canal Factorio 2.0 ; minor IMPAIR (1,3,5...) = 2.1.
-#   Un fix se fait par un bump de PATCH sur les DEUX canaux : 1.0.0 -> 1.0.1 (2.0)
-#   et 1.1.0 -> 1.1.1 (2.1) ; le patch reste donc libre pour les correctifs.
-#   La nature feature/correctif est portée par changelog.txt, pas par le numéro.
-#
-#   ATTENTION collision : pour une release de FEATURE, avancer le minor canonique
-#   d'AU MOINS 2 (1.0.x -> 1.2.x), afin que le 2.1 dérivé (1.3.x) ne réutilise
-#   jamais un minor impair déjà sorti (1.1.x). Quand on abandonnera 2.0, on
-#   supprimera la cible 2.0 et le mod reprendra un versioning continu sans delta.
+# Convention de version : semver continu, sans décalage. Le mod a longtemps été
+# publié sur DEUX canaux, le minor encodant la version du jeu (minor pair = 2.0,
+# minor impair = 2.1 dérivé avec minor+1). Depuis la 1.8.0 le support 2.0 est
+# abandonné : plus qu'un canal, donc plus de delta de minor. La 1.8.0 part
+# délibérément au-dessus du dernier 2.1 publié (1.7.1) pour que la mise à jour
+# soit bien vue par les joueurs déjà sur le canal 2.1.
 #
 # Usage :
-#   ./build.sh package        # génère dist/...-_1.0.0.zip (2.0) et _1.1.0.zip (2.1)
+#   ./build.sh package        # génère dist/..._<version>.zip
 #   ./build.sh link           # lien symbolique dev: ~/.factorio/mods/<mod> -> ce repo
 #   ./build.sh unlink         # retire le lien dev
-#   ./build.sh install        # package, puis copie le zip 2.0 dans ~/.factorio/mods/
+#   ./build.sh install        # package, puis copie le zip dans ~/.factorio/mods/
 #   ./build.sh clean          # supprime dist/
 #
-# Dev recommandé : `link` une fois, puis on édite le code et on recharge Factorio
-# (le repo est en factorio_version 2.0, donc chargeable tel quel dans le jeu 2.0).
+# Dev recommandé : `link` une fois, puis on édite le code et on recharge Factorio.
 #
 set -euo pipefail
 
@@ -51,80 +43,37 @@ CONTENTS=(
   locale
 )
 
-# Cibles : "gamever:base_min:flib_min:minor_offset"
-TARGETS=(
-  "2.0:2.0.0:0.16.5:0"
-  "2.1:2.1.0:0.17.0:1"
-)
-
-# Semver canonique lu dans info.json (= la release 2.0).
+# Semver du mod + version du jeu ciblée, lus dans info.json (source de vérité).
 mod_version() {
   python3 -c "import json;print(json.load(open('info.json'))['version'])"
 }
 
-# Réécrit version + factorio_version + bornes base/flib dans un info.json donné.
-# Les dépendances optionnelles (Ultracube, nullius, ...) sont préservées.
-rewrite_info() {
-  local file="$1" modver="$2" gamever="$3" base_min="$4" flib_min="$5"
-  python3 - "$file" "$modver" "$gamever" "$base_min" "$flib_min" <<'PY'
-import json, sys
-path, modver, gamever, base_min, flib_min = sys.argv[1:6]
-with open(path) as f:
-    data = json.load(f)
-data["version"] = modver
-data["factorio_version"] = gamever
-deps = []
-for d in data.get("dependencies", []):
-    s = d.strip()
-    if s.startswith("base"):
-        deps.append(f"base >= {base_min}")
-    elif s.startswith("flib"):
-        deps.append(f"flib >= {flib_min}")
-    else:
-        deps.append(d)
-data["dependencies"] = deps
-with open(path, "w") as f:
-    json.dump(data, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-PY
-}
-
-# X.Y.Z + offset sur le minor -> X.(Y+offset).Z
-bump_minor() {
-  local ver="$1" offset="$2"
-  local maj="${ver%%.*}" rest="${ver#*.}"
-  local min="${rest%%.*}" pat="${rest#*.}"
-  echo "${maj}.$((min + offset)).${pat}"
+game_version() {
+  python3 -c "import json;print(json.load(open('info.json'))['factorio_version'])"
 }
 
 package() {
-  local base; base="$(mod_version)"
+  local modver; modver="$(mod_version)"
+  local gamever; gamever="$(game_version)"
+  local stage="$DIST/${MOD_NAME}_${modver}"
+
   rm -rf "$DIST"
-  mkdir -p "$DIST"
-
-  for target in "${TARGETS[@]}"; do
-    IFS=':' read -r gamever base_min flib_min offset <<<"$target"
-    local modver; modver="$(bump_minor "$base" "$offset")"
-    local stage="$DIST/${MOD_NAME}_${modver}"
-
-    mkdir -p "$stage"
-    for item in "${CONTENTS[@]}"; do
-      [ -e "$item" ] && cp -r "$item" "$stage/"
-    done
-    rewrite_info "$stage/info.json" "$modver" "$gamever" "$base_min" "$flib_min"
-
-    ( cd "$DIST" && zip -rq "${MOD_NAME}_${modver}.zip" "${MOD_NAME}_${modver}" )
-    rm -rf "$stage"
-    echo "  → dist/${MOD_NAME}_${modver}.zip   (Factorio ${gamever})"
+  mkdir -p "$stage"
+  for item in "${CONTENTS[@]}"; do
+    [ -e "$item" ] && cp -r "$item" "$stage/"
   done
-  echo "Packaging OK (semver canonique=${base})."
+
+  ( cd "$DIST" && zip -rq "${MOD_NAME}_${modver}.zip" "${MOD_NAME}_${modver}" )
+  rm -rf "$stage"
+  echo "  → dist/${MOD_NAME}_${modver}.zip   (Factorio ${gamever})"
+  echo "Packaging OK (version=${modver})."
 }
 
 install_local() {
   package
   local base; base="$(mod_version)"
   local mods="$HOME/.factorio/mods"
-  local zip="$DIST/${MOD_NAME}_${base}.zip"   # le zip 2.0 = version canonique
+  local zip="$DIST/${MOD_NAME}_${base}.zip"
   if [ ! -d "$mods" ]; then
     echo "Dossier mods introuvable: $mods" >&2; exit 1
   fi

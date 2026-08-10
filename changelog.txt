@@ -1,4 +1,21 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.8.0
+Date: 2026-08-10
+  Bugfixes:
+    - Station names now carry the quality of the tracked item and of the chosen wagon. Picking a
+      legendary cargo wagon produced a station name with a plain "[item=cargo-wagon]" tag, identical
+      to the normal-quality one, so two bays of different qualities shared a single name. The quality
+      is written as ",quality=<q>" and only when it is not normal, so every existing normal-quality
+      station keeps its exact current name (and the hand-written train interrupts matching it).
+  Changes:
+    - Factorio 2.0 is no longer supported: the mod now targets 2.1 only and ships as a single
+      release. The two-channel versioning (even minor = 2.0, odd minor = 2.1) is retired, hence the
+      jump to 1.8.0 — above the last 2.1 release (1.7.1) so the update is picked up on that channel.
+  Modding interfaces:
+    - get_models is unchanged and already returns wagon_quality: a mod rebuilding a matching station
+      name has everything it needs, but must apply the same rule (",quality=<q>" for a non-normal
+      quality only) — station matching is a byte-for-byte compare.
+---------------------------------------------------------------------------------------------------
 Version: 1.6.1
 Date: 2026-07-26
   Bugfixes:
