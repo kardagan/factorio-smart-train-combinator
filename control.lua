@@ -935,11 +935,20 @@ local function wagon_item_name(proto, entity_name)
   return nil
 end
 
-local function wagon_icon_tag(state)
-  local proto = prototypes.entity[state.wagon_type]
-  if not proto then return "[entity=" .. state.wagon_type .. "]" end
-  local item = wagon_item_name(proto, state.wagon_type)
-  return item and ("[item=" .. item .. "]") or ("[entity=" .. state.wagon_type .. "]")
+-- Quality suffix for a rich-text tag. Emitted ONLY for a non-normal quality: a
+-- normal-quality bay must keep producing the exact pre-quality string, or every
+-- station name (and the hand-written interrupts matching it) would change.
+local function quality_suffix(quality)
+  return (quality and quality ~= "normal") and (",quality=" .. quality) or ""
+end
+
+local function wagon_icon_tag(wagon_type, wagon_quality)
+  local suffix = quality_suffix(wagon_quality)
+  local proto = prototypes.entity[wagon_type]
+  if not proto then return "[entity=" .. wagon_type .. suffix .. "]" end
+  local item = wagon_item_name(proto, wagon_type)
+  return item and ("[item=" .. item .. suffix .. "]")
+    or ("[entity=" .. wagon_type .. suffix .. "]")
 end
 
 -- Wagon run in the station name. name_wagon_count OFF: a single icon.
@@ -947,11 +956,12 @@ end
 -- existing stations/interrupts keep matching (STC is already published; we must
 -- not break saves). Beyond 5, switch to a compact "icon×N" form: N repeated icons
 -- would otherwise overflow the ~200-char backer_name limit and get truncated
--- mid-rich-text-tag (raw "[item=nullius-car…"). Consumers must build the SAME string.
+-- mid-rich-text-tag (raw "[item=nullius-car…"). Consumers must build the SAME string,
+-- quality suffix included (see quality_suffix: emitted for a non-normal quality only).
 local WAGON_ICON_MAX = 5
 local function wagon_run(state)
   if not state.wagon_type then return "" end
-  local tag = wagon_icon_tag(state)
+  local tag = wagon_icon_tag(state.wagon_type, state.wagon_quality)
   if not state.name_wagon_count then return tag end
   local n = wagon_count_for(state)
   if n <= 0 then return "" end
@@ -965,7 +975,8 @@ end
 --   unloading -> "[good] [wagon][wagon]...[red-arrow]"     (good flows OUT of the wagons)
 local function build_station_name(state)
   local is_fluid = (state.kind == KIND.FLUID)
-  local icon_tag = is_fluid and ("[fluid=" .. state.icon .. "]") or ("[item=" .. state.icon .. "]")
+  local icon_tag = is_fluid and ("[fluid=" .. state.icon .. "]")
+    or ("[item=" .. state.icon .. quality_suffix(state.icon_quality) .. "]")
   local wagons   = wagon_run(state)
   -- storage flag: the warehouse icon sits right after the good (forming a
   -- "this good, storage variant" group), marking BOTH the evacuation source
@@ -1121,6 +1132,12 @@ end
 -- the load/unload marker: today it is "" or the storage icon, but it is meant to
 -- generalise to arbitrary custom signals/text later. We return it already rendered
 -- as a string so a consumer never has to interpret it.
+--
+-- wagon_quality matters for the NAME, not just the built stock: a consumer
+-- rebuilding a matching station name must suffix the wagon tag with ",quality=<q>"
+-- and ONLY when q ~= "normal" (see quality_suffix). Station matching is a
+-- byte-for-byte compare, so a normal-quality shape must keep producing the bare,
+-- pre-quality tag.
 
 -- The group segment for a state's auto-name. v1: derived from the storage flag
 -- (which has no mechanical role in this mod - name only). This is the single seam
