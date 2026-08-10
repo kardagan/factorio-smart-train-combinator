@@ -8,6 +8,8 @@ Date: 2026-08-10
       is written as ",quality=<q>" and only when it is not normal, so every existing normal-quality
       station keeps its exact current name (and the hand-written train interrupts matching it).
   Changes:
+    - "Drive station priority" is now enabled by default on a newly placed combinator (at the medium
+      level). Existing combinators keep whatever they were set to.
     - Factorio 2.0 is no longer supported: the mod now targets 2.1 only and ships as a single
       release. The two-channel versioning (even minor = 2.0, odd minor = 2.1) is retired, hence the
       jump to 1.8.0 — above the last 2.1 release (1.7.1) so the update is picked up on that channel.

@@ -169,7 +169,7 @@ local function default_state(entity)
     train_stop_name  = true,   -- auto-rename the station by default (with the wagon count)
     name_wagon_count = true,    -- include the wagon (probe) count in the auto-name
     priority_level   = "medium",   -- high / important / medium / low
-    link_priority    = false,
+    link_priority    = true,   -- drive the stop priority by default (at the medium band)
     priority_output_signal = { type = "virtual", name = "signal-P", quality = "normal" },
     -- Multi-resource module (MULTI): a list of tracked goods + the FIFO dispatch
     -- state. Empty / unused on the classic single-good main.
