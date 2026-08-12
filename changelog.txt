@@ -1,4 +1,25 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.9.0
+Date: 2026-08-11
+  Features:
+    - The multi-resource module no longer dispatches FIFO: it requests the emptiest buffer instead
+      of the one that asked first. The choice is frozen while a train is heading here, and a
+      challenger must be 5 percentage points emptier to take over.
+    - The monitor keeps an arrival history: the last 10 trains that reached the stop, with the
+      resource requested and how long ago.
+  Changes:
+    - The buffer monitor is now a table, one row per resource: item, stored (free when unloading),
+      buffer, fill, wagon, ready. The per-bay detail folds away behind an expander.
+    - Amounts read in stacks by default, with a title-bar toggle for raw units.
+  Bugfixes:
+    - A chest wired to several probes is no longer counted in full by each of them.
+    - The chest's red bar is now honoured: slots locked behind it cannot be filled, so counting
+      them promised room no train could use.
+    - Shared bays no longer credit every resource with the whole bay. Generic probes cannot be
+      pinned to a resource, so each is credited with its share of the slots; previously the same
+      space was counted once per resource. Fluids are never split.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.8.0
 Date: 2026-08-10
   Bugfixes:

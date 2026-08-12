@@ -41,6 +41,7 @@ CONTENTS=(
   LICENSE
   graphics
   locale
+  prototypes
 )
 
 # Semver du mod + version du jeu ciblée, lus dans info.json (source de vérité).

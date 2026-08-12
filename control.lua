@@ -98,8 +98,20 @@ local PRIO_DD  = "stc2-prio-level"
 local PRIO_LBL = "stc2-prio-label"
 local NAME_PREVIEW = "stc2-name-preview"
 local CAP_LBL  = "stc2-cap-label"
-local WAGONS   = "stc2-wagons"
+local MON_HINT = "stc2-mon-hint"   -- "no probes wired" notice under the buffer table
 local TRAINS   = "stc2-trains"
+-- Monitor buffer table + arrival history element names, grouped in one table: the
+-- main chunk sits near Lua's 200-local limit, so a block of related GUI names
+-- shares a single local rather than taking one each.
+local M = {
+  TABLE = "stc2-mon-table",   -- the buffer table itself
+  UNIT  = "stc2-mon-unit",    -- titlebar toggle: pressed = stacks, released = units
+  FOLD  = "stc2-mon-fold-",   -- + resource index: per-resource expander button
+  H_HEAD = "stc2-hist-head",  -- history: clickable header (expander + caption)
+  H_FOLD = "stc2-hist-fold",  -- history: the expander button
+  H_LIST = "stc2-hist-list",  -- history: the rows container
+  H_LBL  = "stc2-hist-label", -- history: "Arrival history (N)" caption
+}
 -- multi-resource goods picker (base window, bottom block)
 local GOODS_FRAME = "stc2-goods-frame"
 local GOODS_TABLE = "stc2-goods-table"
@@ -143,6 +155,9 @@ local function ensure_storage()
   storage.mains = storage.mains or {}
   storage.guis  = storage.guis  or {}  -- player_index -> main unit_number (base window open)
   storage.monitor_pref = storage.monitor_pref or {}  -- player_index -> bool: show monitor window
+  storage.mon_unit = storage.mon_unit or {}  -- player_index -> "stacks"|"units": monitor amount unit (items only)
+  storage.mon_fold = storage.mon_fold or {}  -- player_index -> { [resource index] = true }: expanded probe rows
+  storage.hist_fold = storage.hist_fold or {}  -- player_index -> bool: arrival history expanded
   storage.stopcfg_pref = storage.stopcfg_pref or {}  -- player_index -> bool: show stop-config window
   storage.netcfg_pref  = storage.netcfg_pref  or {}  -- player_index -> bool: show circuit-condition window
   storage.typed      = storage.typed      or {}  -- typed-probe unit_number -> { name, quality } (pinned resource)
@@ -177,6 +192,9 @@ local function default_state(entity)
     request_queue  = {},        -- FIFO of good indices waiting for a train
     active_request = nil,       -- good index currently committed (station named for it, L=1)
     released_train_id = nil,    -- id of the train we already released the active request on
+    -- Arrival history, newest first: { { tick, icon, quality, fluid }, ... }
+    history        = {},
+    seen_train_id  = nil,       -- train currently at the quay, already recorded
     -- Enable gate ("active si condition") - applies to BOTH modules. While the
     -- condition is false, the module requests 0 trains (the stop stays active).
     gate_enabled   = false,
@@ -224,6 +242,8 @@ local function migrate_state(state)
   -- Multi-resource + FIFO fields
   state.goods         = state.goods or {}
   state.request_queue = state.request_queue or {}
+  -- Arrival history (newest first, capped at HISTORY_MAX)
+  state.history = state.history or {}
   -- Enable gate fields
   if state.gate_enabled == nil   then state.gate_enabled = false end
   if state.gate_op == nil        then state.gate_op = "<" end
@@ -402,17 +422,67 @@ local function wagon_filter(kind)
   return { { filter = "type", type = (kind == KIND.FLUID) and "fluid-wagon" or "cargo-wagon" } }
 end
 
+-- Buffer helpers, grouped in one table: the main chunk is close to Lua's 200-local
+-- limit, so related functions share a single local instead of taking one each.
+local BUF = {}
+
+-- The buffer entities (chests / tanks) wired to a probe's input, as a list.
+function BUF.of_probe(state, probe)
+  local out = {}
+  for _, e in pairs(walk_network(probe, INPUT_CONNECTORS)) do
+    if state.kind == KIND.ITEM and ITEM_STORAGE_TYPES[e.type] then
+      out[#out + 1] = e
+    elseif state.kind == KIND.FLUID and e.type == "storage-tank" then
+      out[#out + 1] = e
+    end
+  end
+  return out
+end
+
+-- How many probes of `list` each buffer entity is wired to. A chest shared by two
+-- probes is one physical chest serving two wagons, so each may only count HALF of
+-- it -- otherwise the same slots are promised twice and the module calls trains
+-- for room that does not exist.
+function BUF.share(state, list)
+  local share = {}
+  for _, probe in pairs(list or {}) do
+    if probe.valid then
+      for _, e in pairs(BUF.of_probe(state, probe)) do
+        share[e.unit_number] = (share[e.unit_number] or 0) + 1
+      end
+    end
+  end
+  return share
+end
+
 -- Total buffer SLOTS wired to a probe's input (items), or total tank fluid
 -- capacity (fluids). Computed once per probe; per-good capacity is then
 -- slots * stack_size(good) for items, or this value directly for fluids.
-local function probe_buffer_units(state, probe)
+-- `share` (optional) divides each buffer by the number of probes sharing it.
+function BUF.units(state, probe, share)
   local units = 0
-  for _, e in pairs(walk_network(probe, INPUT_CONNECTORS)) do
-    if state.kind == KIND.ITEM and ITEM_STORAGE_TYPES[e.type] then
-      units = units + e.prototype.get_inventory_size(defines.inventory.chest, e.quality)
-    elseif state.kind == KIND.FLUID and e.type == "storage-tank" then
-      units = units + e.prototype.get_fluid_capacity(e.quality)
+  for _, e in pairs(BUF.of_probe(state, probe)) do
+    local u
+    if state.kind == KIND.FLUID then
+      u = e.prototype.get_fluid_capacity(e.quality)
+    else
+      -- Honour the RED BAR: slots locked behind it cannot be filled by inserters,
+      -- so counting them would promise room that no train can ever use. get_bar()
+      -- is the 1-based index where the red area starts, hence bar-1 usable slots.
+      local inv = e.get_inventory(defines.inventory.chest)
+      if inv then
+        u = #inv
+        if inv.supports_bar() then
+          local bar = inv.get_bar()
+          if bar and bar >= 1 and bar - 1 < u then u = bar - 1 end
+        end
+      else
+        u = e.prototype.get_inventory_size(defines.inventory.chest, e.quality)
+      end
     end
+    local k = share and share[e.unit_number] or 1
+    if k and k > 1 then u = u / k end
+    units = units + u
   end
   return units
 end
@@ -438,9 +508,9 @@ end
 
 -- Stored + buffer capacity of one probe for a given good (capacity in that
 -- good's units). Generalises the old read_probe to an arbitrary good.
-local function read_probe_good(state, probe, icon)
+local function read_probe_good(state, probe, icon, share)
   local stored = probe_stored(state, probe, icon)
-  local units  = probe_buffer_units(state, probe)
+  local units  = BUF.units(state, probe, share)
   local capacity
   if state.kind == KIND.FLUID then
     capacity = units
@@ -451,8 +521,8 @@ local function read_probe_good(state, probe, icon)
   return stored, capacity
 end
 
-local function read_probe(state, probe)
-  return read_probe_good(state, probe, state.icon)
+local function read_probe(state, probe, share)
+  return read_probe_good(state, probe, state.icon, share)
 end
 
 --- Evaluate every wagon. Returns { cap, rows = { {stored,capacity,loads} }, bottleneck_idx, raw }.
@@ -460,11 +530,14 @@ local function evaluate(state)
   local cap = per_wagon_capacity(state)
   local rows, best_loads, best_idx = {}, nil, nil
   local stored_total, cap_total = 0, 0
+  -- One chest wired to two bay probes is one chest serving two wagons: each bay
+  -- owns half of it, or both would count the same slots as their own.
+  local share = BUF.share(state, state.probes)
   local i = 0
   for _, probe in pairs(state.probes) do
     if probe.valid then
       i = i + 1
-      local stored, capacity = read_probe(state, probe)
+      local stored, capacity = read_probe(state, probe, share)
       local loads = 0
       if cap and cap > 0 then
         if state.direction == DIRECTION.LOAD then
@@ -497,10 +570,13 @@ local function evaluate_multi(state)
   local m       = #goods
   local is_item = (state.kind == KIND.ITEM)
 
+  -- A chest wired to two bay probes serves two wagons, so each bay owns only its
+  -- fraction of it.
+  local share = BUF.share(state, state.probes)
   local probe_units = {}
   for _, probe in pairs(state.probes) do
     if probe.valid then
-      probe_units[#probe_units + 1] = { probe = probe, units = probe_buffer_units(state, probe) }
+      probe_units[#probe_units + 1] = { probe = probe, units = BUF.units(state, probe, share) }
     end
   end
   local nprobes = #probe_units
@@ -531,8 +607,17 @@ local function evaluate_multi(state)
     local rows, min_loads = {}, nil
     local stored_total, cap_total = 0, 0
     for wi, pu in ipairs(probe_units) do
-      local stored   = bay_stored[wi][gi]
-      local capacity = (state.kind == KIND.FLUID) and pu.units or (item and pu.units * item.stack_size or 0)
+      local stored = bay_stored[wi][gi]
+      -- Generic probes cannot be pinned to a resource, so the bay's slots are not
+      -- attributable: with M goods sharing one bay, each good's SHARE of it is
+      -- slots / M. Giving every good the whole bay counted the same space M times
+      -- and made every buffer look emptier than it is (the fill the dispatch reads).
+      -- Fluids are never split: a fluid wagon carries one fluid, and a tank holds
+      -- one fluid, so a fluid bay is de facto dedicated.
+      local own_units = (state.kind == KIND.FLUID) and pu.units
+                        or (m > 1 and (pu.units / m) or pu.units)
+      local capacity = (state.kind == KIND.FLUID) and own_units
+                        or (item and own_units * item.stack_size or 0)
       local loads = 0
       if cap and cap > 0 then
         if state.direction == DIRECTION.LOAD then
@@ -585,6 +670,11 @@ local function evaluate_typed(state)
   end
   table.sort(order)
 
+  -- Counted over EVERY wired typed probe, not just one resource's: the case this
+  -- guards against is one chest wired to both the iron probe and the coal probe.
+  -- Each then owns half of it, so the shared slots are not promised twice.
+  local share = BUF.share(state, state.typed_probes)
+
   local per_good = {}
   for gi, name in ipairs(order) do
     local g    = groups[name]
@@ -595,7 +685,7 @@ local function evaluate_typed(state)
     local stored_total, cap_total = 0, 0
     for wi, probe in ipairs(g.probes) do
       local stored   = probe_stored(state, probe, icon)
-      local units    = probe_buffer_units(state, probe)
+      local units    = BUF.units(state, probe, share)
       local capacity = (state.kind == KIND.FLUID) and units or (item and units * item.stack_size or 0)
       local loads = 0
       if cap and cap > 0 then
@@ -631,11 +721,70 @@ local function stopped_train(state)
   return nil
 end
 
--- FIFO dispatch: maintain request_queue (good indices) + active_request, commit
--- to one good at a time, release it the moment a train ARRIVES at the quay
--- (rename-on-arrival; we remember that train's id so we don't cascade the whole
--- queue while it still sits there). Returns the active good index, or nil.
-local function dispatch_fifo(state, em)
+-- === Arrival history =======================================================
+-- Newest first. 10 is what the monitor shows; keeping more would grow every
+-- save file for rows nothing reads.
+local HISTORY_MAX = 10
+
+-- Record one line per train that PRESENTS ITSELF at the quay, tagged with the
+-- resource being requested at that moment. Deduplicated on the train id: the
+-- tick loop sees the same stopped train for as long as it sits there, and only
+-- its arrival is an event. `icon`/`quality` are captured by the caller because
+-- the multi module releases its active request the moment the train lands.
+local function record_arrival(state, icon, quality)
+  local train = stopped_train(state)
+  if not train then
+    state.seen_train_id = nil
+    return
+  end
+  if train.id == state.seen_train_id then return end
+  state.seen_train_id = train.id
+  table.insert(state.history, 1, {
+    tick = game.tick, icon = icon, quality = quality,
+    fluid = (state.kind == KIND.FLUID) or nil,
+  })
+  for i = #state.history, HISTORY_MAX + 1, -1 do state.history[i] = nil end
+end
+
+-- How many trains are already heading here (this stop is their goal/waypoint),
+-- the train sitting at the quay included. Summed over every wired stop.
+-- `trains_count` is readable with no control behaviour, so this works on a stop
+-- the module does not drive.
+local function inbound_trains(state)
+  local n = 0
+  for _, stop in pairs(state.stops or {}) do
+    if stop.valid then n = n + (stop.trains_count or 0) end
+  end
+  return n
+end
+
+-- Emptiness of a tracked good's buffer, 0..1 (1 = nothing left). The multi module
+-- only ever UNLOADS -- it requests inbound resources -- so "the one that is most
+-- missing" is the emptiest buffer. Compared as a RATIO, not as a raw shortfall:
+-- a resource with a small buffer must not be starved by one with a huge buffer.
+local function good_deficit(info)
+  local capt = info.cap_total or 0
+  if capt <= 0 then return 0 end
+  local fill = (info.stored_total or 0) / capt
+  if fill < 0 then fill = 0 elseif fill > 1 then fill = 1 end
+  return 1 - fill
+end
+
+-- The incumbent keeps the station unless a challenger is clearly emptier. Without
+-- this, two goods sitting a fraction of a percent apart would trade the station
+-- name every pass.
+local DEFICIT_MARGIN = 0.05
+
+-- Demand-driven dispatch: request the resource that is MISSING THE MOST, not the
+-- one that asked first. A FIFO queue ordered by age of request would call coal
+-- while iron is emptier -- the order a need appeared says nothing about which need
+-- is now the most urgent.
+--
+-- The choice is re-evaluated continuously, but FROZEN as soon as a train is
+-- heading here: retargeting the stop mid-journey would send that train to fetch
+-- something else, or strand it. It thaws when the quay clears and no train is
+-- inbound. Returns the active good index, or nil.
+local function dispatch_demand(state, em)
   local pg = em.per_good
 
   -- guard: a stale active index (goods list shrank via edit/paste) would never
@@ -644,10 +793,9 @@ local function dispatch_fifo(state, em)
     state.active_request = nil
   end
 
-  -- Release the active good when its train ARRIVES (rename-on-arrival), but
-  -- remember it as `last_served` while that train is still at the quay so it is
-  -- NEVER re-queued while being served (no two demands for the same resource).
-  -- Once the quay clears, the good is eligible again (round-robin).
+  -- Release the committed good once its train ARRIVES (rename-on-arrival), and
+  -- keep it as `last_served` while that train is still unloading, so we never
+  -- re-request what is being delivered right now.
   local train = stopped_train(state)
   if train then
     if state.active_request and train.id ~= state.released_train_id then
@@ -660,32 +808,51 @@ local function dispatch_fifo(state, em)
     state.last_served       = nil
   end
 
-  -- Queue = the ready goods that are neither active nor currently being served,
-  -- each present at most once (FIFO order preserved, served good re-added at tail).
-  local in_queue = {}
-  for _, gi in ipairs(state.request_queue) do in_queue[gi] = true end
+  -- Best = emptiest eligible buffer. `ready` still gates eligibility: it means
+  -- there is room for a full wagon, so we never call a train that cannot fit.
+  local best_gi, best_def = nil, nil
   for gi, info in ipairs(pg) do
-    if info.ready and gi ~= state.active_request and gi ~= state.last_served and not in_queue[gi] then
-      table.insert(state.request_queue, gi)
-      in_queue[gi] = true
+    if info.ready and gi ~= state.last_served then
+      local def = good_deficit(info)
+      if best_def == nil or def > best_def then best_gi, best_def = gi, def end
     end
   end
-  local kept = {}
-  for _, gi in ipairs(state.request_queue) do
-    if pg[gi] and pg[gi].ready and gi ~= state.last_served then kept[#kept + 1] = gi end
-  end
-  state.request_queue = kept
 
-  -- Commit to the head of the queue only when the quay is EMPTY. Waiting for the
-  -- previous train to leave means the buffer reflects its cargo, so readiness
-  -- (esp. free room when unloading) is evaluated on the real state -> we never
-  -- request a train that won't fit / can't be filled.
-  if not state.active_request and not train then
-    while #state.request_queue > 0 do
-      local gi = table.remove(state.request_queue, 1)
-      if pg[gi] and pg[gi].ready then state.active_request = gi; break end
+  -- A train is already on its way (or at the quay): keep the current target.
+  if inbound_trains(state) > 0 then
+    state.request_queue = {}
+    return state.active_request
+  end
+
+  if state.active_request then
+    -- Switch only if the challenger is clearly emptier than the incumbent, and
+    -- only while nothing is inbound (checked just above).
+    local cur = pg[state.active_request]
+    local cur_def = cur and good_deficit(cur) or -1
+    if not (cur and cur.ready) then
+      state.active_request = best_gi
+    elseif best_gi and best_def > cur_def + DEFICIT_MARGIN then
+      state.active_request = best_gi
+    end
+  else
+    state.active_request = best_gi
+  end
+
+  -- The monitor shows what is waiting behind the active request: every other
+  -- eligible good, emptiest first. Purely informational now -- the next pick is
+  -- recomputed from live fills, never popped from this list.
+  local waiting = {}
+  for gi, info in ipairs(pg) do
+    if info.ready and gi ~= state.active_request and gi ~= state.last_served then
+      waiting[#waiting + 1] = gi
     end
   end
+  table.sort(waiting, function(a, b)
+    local da, db = good_deficit(pg[a]), good_deficit(pg[b])
+    if da == db then return a < b end  -- stable: index breaks the tie
+    return da > db
+  end)
+  state.request_queue = waiting
 
   return state.active_request
 end
@@ -1076,7 +1243,12 @@ local function refresh(state)
       end
     end
     state.eval_multi = em
-    local active = dispatch_fifo(state, em)
+    -- Capture the requested resource BEFORE dispatch: a train landing releases the
+    -- active request in the same pass, so afterwards there is nothing left to tag
+    -- the arrival with.
+    local requested = state.active_request and em.per_good[state.active_request] or nil
+    record_arrival(state, requested and requested.icon, requested and requested.quality)
+    local active = dispatch_demand(state, em)
     if active and em.per_good[active] then
       local info = em.per_good[active]
       state.icon         = info.icon
@@ -1108,6 +1280,7 @@ local function refresh(state)
 
   local eval = evaluate(state)
   state.eval = eval
+  record_arrival(state, state.icon, state.icon_quality)
 
   local trains = eval.raw
   if state.max_trains and state.max_trains ~= -1 then trains = math.min(trains, state.max_trains) end
@@ -1232,6 +1405,69 @@ local function good_caption(state)
   return state.kind == KIND.FLUID and ("[fluid=" .. state.icon .. "] ") or ("[item=" .. state.icon .. "] ")
 end
 
+-- Buffer fill as a percentage. This is the number the multi module's dispatch
+-- decides on (it requests the emptiest buffer), so it is shown rather than left
+-- implicit in the qty/total pair.
+local function fmt_fill(stored, capacity)
+  if not capacity or capacity <= 0 then return "—" end
+  local pct = (stored or 0) / capacity * 100
+  if pct < 0 then pct = 0 elseif pct > 100 then pct = 100 end
+  -- a nearly-empty-but-not-empty buffer must not read as a flat 0%
+  if pct > 0 and pct < 1 then return "<1 %" end
+  return string.format("%d %%", math.floor(pct + 0.5))
+end
+
+-- "how long ago" for a history line, at the granularity that reads best: seconds
+-- under a minute, minutes+seconds under an hour, then hours+minutes. Factorio runs
+-- at 60 ticks/s.
+local function fmt_ago(ticks)
+  local s = math.floor(math.max(0, ticks) / 60)
+  if s < 60 then return { "stc2-gui.ago-s", tostring(s) } end
+  local m = math.floor(s / 60)
+  -- Seconds stop earning their place past a few minutes: "12 min 47 s" reads no
+  -- better than "12 min", so keep them only while the arrival is still recent.
+  if m < 5 and s % 60 ~= 0 then return { "stc2-gui.ago-ms", tostring(m), tostring(s % 60) } end
+  if m < 60 then return { "stc2-gui.ago-m", tostring(m) } end
+  if m % 60 == 0 then return { "stc2-gui.ago-h", tostring(math.floor(m / 60)) } end
+  return { "stc2-gui.ago-hm", tostring(math.floor(m / 60)), tostring(m % 60) }
+end
+
+-- Icon for the stacks/units toggle. The vanilla "stack size" pictograph reads best,
+-- but a mod could remove the signal, so fall back to a core sprite rather than
+-- leaving an unlabelled empty button.
+local function unit_sprite()
+  local s = "virtual-signal/signal-stack-size"
+  if helpers and helpers.is_valid_sprite_path and not helpers.is_valid_sprite_path(s) then
+    return "utility/side_menu_production_icon"
+  end
+  return s
+end
+
+-- The player's monitor unit preference (the toggle's own state).
+local function mon_unit_pref(player)
+  return storage.mon_unit[player.index] or "stacks"
+end
+
+-- Monitor amount unit actually applied. Stacks are the default for items; fluids
+-- have no stacks so they stay raw whatever the drop-down says.
+local function mon_unit(player, state)
+  if state.kind == KIND.FLUID then return "units" end
+  return mon_unit_pref(player)
+end
+
+-- Render an amount of `icon` in the player's chosen unit. In stack mode a value
+-- is shown with one decimal below 10 stacks, so a part-filled wagon does not
+-- collapse to a flat "0".
+local function fmt_amount(amount, icon, unit)
+  if unit ~= "stacks" then return fmt(amount) end
+  local item = icon and prototypes.item[icon]
+  local ss   = item and item.stack_size or 0
+  if ss <= 0 then return fmt(amount) end
+  local stacks = amount / ss
+  if stacks > 0 and stacks < 10 then return string.format("%.1f", stacks) end
+  return tostring(math.floor(stacks))
+end
+
 --- Refresh the live bits of the BASE window (status line + direction icon).
 local function update_base(player, state)
   local window = player.gui.screen[WINDOW]
@@ -1350,14 +1586,98 @@ local function update_stop(player, state)
   end
 end
 
---- Refresh the MONITOR window (per-wagon buffer readout). No-op if it's closed.
+-- Flatten either evaluator's output into ONE shape the monitor table renders:
+-- a list of resources, each carrying its own per-probe rows. The single module
+-- has exactly one resource (its tracked good); the multi module has one per
+-- tracked/typed good. Amounts stay raw here - the unit is applied at render.
+local function monitor_resources(state)
+  -- The FIRST row holding the minimum is the bottleneck. Only that one gets the
+  -- ←min marker: with several bays tied at the minimum, marking them all would
+  -- read as "everything is the bottleneck" and point nowhere.
+  local function first_min(rows, min_loads)
+    for i, row in ipairs(rows) do if row.loads == min_loads then return i end end
+  end
+  if is_multi(state) then
+    local em = state.eval_multi or { per_good = {} }
+    local out = {}
+    for gi, info in ipairs(em.per_good) do
+      local rows = info.rows or {}
+      out[gi] = {
+        icon = info.icon, quality = info.quality, cap = info.cap, rows = rows,
+        stored_total = info.stored_total or 0, cap_total = info.cap_total or 0,
+        ready = info.ready_loads or 0, index = gi,
+        bottleneck_idx = first_min(rows, info.ready_loads or 0),
+      }
+    end
+    return out
+  end
+  local eval = state.eval or { rows = {}, cap = nil, raw = 0 }
+  if not state.icon then return {} end
+  return { {
+    icon = state.icon, quality = state.icon_quality, cap = eval.cap, rows = eval.rows or {},
+    stored_total = eval.stored_total or 0, cap_total = eval.cap_total or 0,
+    ready = eval.raw or 0, index = 1, bottleneck_idx = eval.bottleneck_idx,
+  } }
+end
+
+-- The two "storage" numbers for a row, in the direction that matters: loading
+-- watches what has PILED UP, unloading watches the ROOM LEFT.
+local function storage_pair(state, stored, capacity)
+  if state.direction == DIRECTION.LOAD then return stored, capacity end
+  return math.max(0, capacity - stored), capacity
+end
+
+-- Redraw the arrival-history block. Ages are relative to now, so this repaints on
+-- every tick pass; the rows themselves only change when a train lands.
+local function update_history(player, state, content)
+  local head     = content[M.H_HEAD]
+  local list     = content[M.H_LIST]
+  local hist     = state.history or {}
+  -- `not not`: hist_fold is nil until the player expands the block, and Lua's `and`
+  -- would propagate that nil straight into `visible`, which demands a boolean.
+  local expanded = not not (storage.hist_fold[player.index] and #hist > 0)
+
+  head[M.H_FOLD].sprite = expanded and "utility/collapse" or "utility/expand"
+  head[M.H_FOLD].enabled = #hist > 0
+  head[M.H_LBL].caption = { "stc2-gui.history-head", tostring(#hist) }
+
+  list.visible = expanded
+  list.clear()
+  if not expanded then return end
+  for _, h in ipairs(hist) do
+    local ic
+    if not h.icon then
+      ic = ""  -- multi module idle at the time: a train arrived unrequested
+    elseif h.fluid then
+      ic = "[fluid=" .. h.icon .. "]"
+    else
+      ic = "[item=" .. h.icon .. quality_suffix(h.quality) .. "]"
+    end
+    local ago = fmt_ago(game.tick - (h.tick or 0))
+    local el = list.add({ type = "label", caption = { "stc2-gui.history-row", ic, ago } })
+    el.style.font_color = { 0.75, 0.75, 0.75 }
+  end
+end
+
+--- Refresh the MONITOR window (per-resource buffer readout). No-op if it's closed.
 local function update_monitor(player, state)
   local mon = player.gui.screen[MONITOR]
   if not (mon and mon.valid) then return end
   local content = mon["stc2-mon-body"]["stc2-mon-content"]
+  local unit    = mon_unit(player, state)
+  local multi   = is_multi(state)
+  local fluid   = (state.kind == KIND.FLUID)
 
-  -- Multi module: per-good readiness + the active request + the FIFO queue.
-  if is_multi(state) then
+  -- keep the unit drop-down honest when the Type switches under an open monitor
+  local bar = mon.children[1]
+  if bar and bar[M.UNIT] then
+    bar[M.UNIT].visible = not fluid
+    bar[M.UNIT].toggled = mon_unit_pref(player) == "stacks"
+  end
+
+  -- Header line: the multi module has no single tracked good, so it reports the
+  -- active request instead of a per-wagon capacity.
+  if multi then
     local em = state.eval_multi or { per_good = {} }
     local active = state.active_request
     if active and em.per_good[active] then
@@ -1365,58 +1685,139 @@ local function update_monitor(player, state)
     else
       content[CAP_LBL].caption = { "stc2-gui.multi-idle" }
     end
-    local qpos = {}
-    for p, gi in ipairs(state.request_queue or {}) do qpos[gi] = p end
-    local wagons = content[WAGONS]
-    wagons.clear()
-    for gi, info in ipairs(em.per_good) do
-      local icon = (state.kind == KIND.FLUID) and ("[fluid=" .. (info.icon or "") .. "]")
-                                              or  ("[item="  .. (info.icon or "") .. "]")
-      local status
-      if gi == active then status = { "stc2-gui.multi-row-active" }
-      elseif qpos[gi] then status = { "stc2-gui.multi-row-queued", tostring(qpos[gi]) }
-      elseif info.ready then status = { "stc2-gui.multi-row-ready" }
-      else status = { "stc2-gui.multi-row-idle" } end
-      local row_ls = { "stc2-gui.multi-row", icon, status }
-      local caption = (gi == active) and { "", "[color=255,200,0]", row_ls, "[/color]" } or row_ls
-      wagons.add({ type = "label", caption = caption })
-    end
-    if #em.per_good == 0 then
-      wagons.add({ type = "label", caption = { "", "[color=180,180,180]", { "stc2-gui.no-goods" }, "[/color]" } })
-    end
-    content[TRAINS].caption = { "stc2-gui.multi-l", tostring(state.trains_call or 0) }
-    content[PRIO_LBL].visible = false
-    return
-  end
-
-  local eval = state.eval or { rows = {}, cap = nil, raw = 0 }
-
-  -- Per-wagon capacity header
-  if eval.cap then
-    local icon = (state.kind == KIND.FLUID) and "" or good_caption(state)
-    content[CAP_LBL].caption = { "stc2-gui.cap-per-wagon", fmt(eval.cap), icon }
+  elseif (state.eval or {}).cap then
+    local icon = fluid and "" or good_caption(state)
+    content[CAP_LBL].caption = { "stc2-gui.cap-per-wagon", fmt(state.eval.cap), icon }
   else
     content[CAP_LBL].caption = { "stc2-gui.cap-per-wagon-unset" }
   end
 
-  -- Per-wagon rows
-  local wagons = content[WAGONS]
-  wagons.clear()
-  for i, row in ipairs(eval.rows) do
-    local row_ls
-    if state.direction == DIRECTION.LOAD then
-      row_ls = { "stc2-gui.wagon-load", i, good_caption(state), fmt(row.stored), fmt(row.capacity), row.loads }
-    else
-      row_ls = { "stc2-gui.wagon-unload", i, good_caption(state), fmt(row.capacity - row.stored), fmt(row.capacity), row.loads }
-    end
-    local caption = row_ls
-    if i == eval.bottleneck_idx then
-      caption = { "", "[color=255,200,0]", row_ls, { "stc2-gui.min-suffix" }, "[/color]" }
-    end
-    wagons.add({ type = "label", caption = caption })
+  local qpos = {}
+  if multi then for p, gi in ipairs(state.request_queue or {}) do qpos[gi] = p end end
+
+  local res  = monitor_resources(state)
+  local fold = storage.mon_fold[player.index] or {}
+  local tbl  = content[M.TABLE]
+  tbl.clear()
+
+  -- One header row of 6. The ruled table separates the columns on its own, so the
+  -- old storage/train group row is gone: it needed a colspan Factorio's table does
+  -- not have, and left "storage" sitting over a single sub-column as if it labelled
+  -- only that one. The group is carried by the column names instead (buffer qty vs
+  -- wagon capacity), and in full by the tooltips.
+  local function head(caption, tip)
+    local el = tbl.add({ type = "label", caption = caption, style = "bold_label" })
+    el.style.font_color = { 0.78, 0.76, 0.72 }
+    if tip then el.tooltip = tip end
   end
-  if #eval.rows == 0 then
-    wagons.add({ type = "label", caption = { "", "[color=180,180,180]", { "stc2-gui.no-probes" }, "[/color]" } })
+  head({ "stc2-gui.col-item" })
+  local loading = state.direction == DIRECTION.LOAD
+  head(loading and { "stc2-gui.col-qty" } or { "stc2-gui.col-free" },
+       loading and { "stc2-gui.tip-col-qty" } or { "stc2-gui.tip-col-free" })
+  head({ "stc2-gui.col-total" }, { "stc2-gui.tip-col-total" })
+  head({ "stc2-gui.col-fill" }, multi and { "stc2-gui.tip-col-fill-multi" } or { "stc2-gui.tip-col-fill" })
+  head({ "stc2-gui.col-capacity" }, { "stc2-gui.tip-col-capacity" })
+  head({ "stc2-gui.col-ready" }, { "stc2-gui.tip-col-ready" })
+
+  -- No resource tracked yet: hide the whole table rather than rule an empty grid,
+  -- and say so in the hint below it. (A tracked resource with no probe still gets
+  -- its row, all zeros.)
+  tbl.visible = #res > 0
+
+  for _, r in ipairs(res) do
+    local nprobes  = #r.rows
+    local expanded = not not (fold[r.index] and nprobes > 1)
+    local active   = multi and (state.active_request == r.index)
+
+    -- resource cell: expander (only when there is per-probe detail to show) + icon
+    local cell = tbl.add({ type = "flow", direction = "horizontal" })
+    cell.style.vertical_align = "center"
+    cell.style.horizontal_spacing = 2
+    if nprobes > 1 then
+      cell.add({
+        type = "sprite-button", name = M.FOLD .. r.index,
+        style = "frame_action_button", sprite = expanded and "utility/collapse" or "utility/expand",
+        tooltip = { "stc2-gui.tip-fold" },
+      }).style.size = 16
+    else
+      cell.add({ type = "empty-widget" }).style.width = 16
+    end
+    -- fluids have no quality; items must carry it or two qualities look identical
+    local ic = fluid and ("[fluid=" .. (r.icon or "") .. "]")
+                     or  ("[item=" .. (r.icon or "") .. quality_suffix(r.quality) .. "]")
+    cell.add({ type = "label", caption = ic })
+
+    local qty, total = storage_pair(state, r.stored_total, r.cap_total)
+    local ready_cap  = fmt_amount(r.cap or 0, r.icon, unit)
+
+    -- The multi module's row status (in progress / queued / ready) replaces the
+    -- bare wagon count: the FIFO position is what you actually need there.
+    local ready_txt
+    if multi then
+      if active               then ready_txt = { "stc2-gui.multi-row-active" }
+      elseif qpos[r.index]    then ready_txt = { "stc2-gui.multi-row-queued", tostring(qpos[r.index]) }
+      elseif r.ready >= 1     then ready_txt = { "stc2-gui.ready-n", tostring(r.ready) }
+      else                         ready_txt = { "stc2-gui.multi-row-idle" } end
+    else
+      ready_txt = tostring(r.ready)
+    end
+
+    local function val(caption)
+      local el = tbl.add({ type = "label", caption = caption })
+      if active then el.style.font_color = { 1, 0.78, 0 } end
+      return el
+    end
+    val(fmt_amount(qty, r.icon, unit))
+    val(fmt_amount(total, r.icon, unit))
+    val(fmt_fill(r.stored_total, r.cap_total))
+    val(ready_cap)
+    val(ready_txt)
+
+    if expanded then
+      for i, row in ipairs(r.rows) do
+        local rq, rt = storage_pair(state, row.stored, row.capacity)
+        local is_min = (i == r.bottleneck_idx)
+        local pc = tbl.add({ type = "flow", direction = "horizontal" })
+        pc.style.left_padding = 18
+        pc.style.vertical_align = "center"
+        pc.add({ type = "label", caption = { "stc2-gui.probe-row", tostring(i) } }).style.font_color =
+          is_min and { 1, 0.78, 0 } or { 0.75, 0.75, 0.75 }
+        local function pval(caption)
+          local el = tbl.add({ type = "label", caption = caption })
+          el.style.font_color = is_min and { 1, 0.78, 0 } or { 0.75, 0.75, 0.75 }
+        end
+        pval(fmt_amount(rq, r.icon, unit))
+        pval(fmt_amount(rt, r.icon, unit))
+        pval(fmt_fill(row.stored, row.capacity))
+        pval("")  -- wagon capacity belongs to the resource, not the bay: shown once above
+        pval(is_min and { "", tostring(row.loads), { "stc2-gui.min-suffix" } } or tostring(row.loads))
+      end
+    end
+  end
+
+  -- Why the table is empty or reads all-zeros: no resource tracked at all, or one
+  -- tracked but no probe wired to read a buffer from.
+  local any_probe = false
+  for _, r in ipairs(res) do if #r.rows > 0 then any_probe = true break end end
+  local msg
+  if #res == 0 then
+    msg = multi and { "stc2-gui.no-goods" } or { "stc2-gui.status-pick-good" }
+  elseif not any_probe then
+    msg = { "stc2-gui.no-probes" }
+  end
+  local hint = content[MON_HINT]
+  hint.clear()
+  hint.visible = msg ~= nil
+  if msg then
+    hint.add({ type = "label", caption = { "", "[color=180,180,180]", msg, "[/color]" } })
+  end
+
+  update_history(player, state, content)
+
+  if multi then
+    content[TRAINS].caption = { "stc2-gui.multi-l", tostring(state.trains_call or 0) }
+    content[PRIO_LBL].visible = false
+    return
   end
 
   content[TRAINS].caption = { "stc2-gui.trains-called", tostring(state.trains_call or 0), tostring(state.max_trains) }
@@ -1478,6 +1879,10 @@ local BASE_W_MONO  = 416
 local BASE_W_MULTI = 516
 local STOP_W       = 372   -- stop panel width = left glue offset (independent of base_w)
 local NET_H        = 182   -- "Condition logique" panel height (fixed content); monitor stacks below it
+-- Monitor/net panel width. The monitor's buffer table carries 5 columns (item,
+-- qty, total, capacity, ready) plus an indent for the folded probe rows, which no
+-- longer fits the old 332. The net panel matches it so the glued stack stays flush.
+local MON_W        = 420
 local function reposition_secondaries(player)
   local base = player.gui.screen[WINDOW]
   if not (base and base.valid) then return end
@@ -1714,23 +2119,46 @@ local function build_monitor_gui(player, state, base_fresh)
   flib_gui.add(player.gui.screen, {
     {
       type = "frame", name = MONITOR, direction = "vertical",
-      style_mods = { width = 332 },
+      style_mods = { width = MON_W },
       { -- titlebar (no drag_target: glued to the base, not free)
         type = "flow", style = "flib_titlebar_flow",
         { type = "label", style = "frame_title", caption = { "stc2-gui.monitor-title" }, ignored_by_interaction = true },
         { type = "empty-widget", style = "flib_titlebar_drag_handle", ignored_by_interaction = true },
+        -- Amount unit, as a toggle: pressed = stacks (the default), released = raw
+        -- units. `frame_action_button` inverts the icon when toggled, so the pressed
+        -- state reads without a second sprite. Items only - fluids have no stacks,
+        -- so the button is hidden rather than lying about the unit.
+        { type = "sprite-button", name = M.UNIT, style = "frame_action_button",
+          sprite = unit_sprite(),
+          toggled = mon_unit_pref(player) == "stacks",
+          tooltip = { "stc2-gui.tip-unit" },
+          visible = state.kind ~= KIND.FLUID },
         { type = "sprite-button", name = MON_CLOSE, style = "frame_action_button", sprite = "utility/close" },
       },
       {
         type = "frame", name = "stc2-mon-body", style = "inside_shallow_frame", direction = "vertical",
         style_mods = { padding = 12 },
         { type = "flow", name = "stc2-mon-content", direction = "vertical",
-          style_mods = { vertical_spacing = 8, minimal_width = 300, minimal_height = 218 },
+          style_mods = { vertical_spacing = 8, minimal_width = MON_W - 32, minimal_height = 218 },
           { type = "label", name = CAP_LBL, style = "caption_label", caption = "" },
-          { type = "flow", name = WAGONS, direction = "vertical", style_mods = { vertical_spacing = 4, left_padding = 4 } },
+          -- header: item | storage (qty/total) | train (capacity/ready), then one
+          -- row per resource with its per-probe rows folded underneath.
+          { type = "table", name = M.TABLE, column_count = 6, style = "stc2_grid_table" },
+          { type = "flow", name = MON_HINT, direction = "vertical", visible = false },
           { type = "line" },
           { type = "label", name = TRAINS, caption = "" },
           { type = "label", name = PRIO_LBL, caption = "" },
+          -- arrival history: collapsed by default (it is a diagnostic, not the
+          -- headline), expanded state remembered per player.
+          { type = "flow", name = M.H_HEAD, direction = "horizontal",
+            style_mods = { vertical_align = "center", horizontal_spacing = 2 },
+            { type = "sprite-button", name = M.H_FOLD, style = "frame_action_button",
+              sprite = "utility/expand", tooltip = { "stc2-gui.tip-history" },
+              style_mods = { size = 16 } },
+            { type = "label", name = M.H_LBL, caption = "" },
+          },
+          { type = "flow", name = M.H_LIST, direction = "vertical",
+            style_mods = { vertical_spacing = 2, left_padding = 18 }, visible = false },
         },
       },
     },
@@ -1748,7 +2176,7 @@ local function build_net_gui(player, state, base_fresh)
   flib_gui.add(player.gui.screen, {
     {
       type = "frame", name = NETCFG, direction = "vertical",
-      style_mods = { width = 332 },  -- same width as the monitor (they stack)
+      style_mods = { width = MON_W },  -- same width as the monitor (they stack)
       { -- titlebar (no drag_target: glued to the base, not free)
         type = "flow", style = "flib_titlebar_flow",
         { type = "label", style = "frame_title", caption = { "stc2-gui.net-title" }, ignored_by_interaction = true },
@@ -2422,6 +2850,33 @@ script.on_event(defines.events.on_gui_click, function(event)
     if player then
       destroy_win(player, MONITOR)
       storage.monitor_pref[player.index] = false
+    end
+  elseif name == M.UNIT then
+    -- Read-only preference: it changes how the monitor prints, not what it computes.
+    -- Pressed = stacks, released = raw units.
+    local player = game.get_player(event.player_index)
+    local state  = gui_state(event)
+    if player and state then
+      local stacks = mon_unit_pref(player) == "stacks"
+      storage.mon_unit[player.index] = stacks and "units" or "stacks"
+      update_monitor(player, state)
+    end
+  elseif name == M.H_FOLD then
+    local player = game.get_player(event.player_index)
+    local state  = gui_state(event)
+    if player and state then
+      storage.hist_fold[player.index] = (not storage.hist_fold[player.index]) or nil
+      update_monitor(player, state)
+    end
+  elseif name:sub(1, #M.FOLD) == M.FOLD then
+    local player = game.get_player(event.player_index)
+    local state  = gui_state(event)
+    local idx    = tonumber(name:sub(#M.FOLD + 1))
+    if player and state and idx then
+      local fold = storage.mon_fold[player.index] or {}
+      fold[idx] = (not fold[idx]) or nil
+      storage.mon_fold[player.index] = fold
+      update_monitor(player, state)
     end
   elseif name == NET_TOGGLE then
     local player = game.get_player(event.player_index)

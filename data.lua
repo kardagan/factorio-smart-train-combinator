@@ -429,3 +429,7 @@ if mods["nullius"] then
   data.raw.technology["nullius-" .. MAIN] = tech
   data.raw.technology[MAIN] = nil
 end
+
+-- GUI styles (the monitor's ruled table). Kept in its own file: line colours are
+-- data-stage only, so they cannot live in control.lua alongside the rest of the GUI.
+require("prototypes.styles")

@@ -11,7 +11,7 @@ Train-stop combinators that call a train only when the buffers are **genuinely r
 Two combinators are provided:
 
 - **Smart Train Combinator** — a single tracked resource, per-wagon validation (the original).
-- **Smart Train Combinator (Multi-Resource)** — a FIFO dispatcher: tracks up to 10 resources and calls one mono-resource train at a time by renaming the stop (with your train interrupts).
+- **Smart Train Combinator (Multi-Resource)** — a demand-driven dispatcher: tracks up to 10 resources and calls one mono-resource train at a time by renaming the stop (with your train interrupts), always asking for the emptiest buffer first.
 
 ![The four entities](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/modules-overview.png)
 
@@ -31,7 +31,7 @@ The **Smart Train Combinator** tracks one item/fluid. Place one **Freight Bay Pr
 
 ### Mode 2 — Multi-resource, shared buffer
 
-The **Multi-Resource** combinator with the generic **Freight Bay Probes**: several resources share the same buffer bays. Pick up to 10 resources; the module renames the stop to request **one at a time** (FIFO) and commits to it until a train arrives, then moves to the next. Each train is mono-resource, so a train is only called when a **full wagon** of that resource is available (and, when unloading, only when the shared bay has room for a full wagon — all resources counted).
+The **Multi-Resource** combinator with the generic **Freight Bay Probes**: several resources share the same buffer bays. Pick up to 10 resources; the module renames the stop to request **one at a time**, always the **emptiest buffer** first, and holds that choice while a train is on its way. Each train is mono-resource, so a train is only called when a **full wagon** of that resource is available (and, when unloading, only when the shared bay has room for a full wagon — all resources counted). Because generic probes can't be pinned to a resource, each resource is credited with its **share** of the shared bay (slots ÷ number of tracked resources).
 
 Best for **2–3 resources** with generously-sized chests. Auto-naming is mandatory (it's what routes the trains); the train limit is 0 or 1.
 
@@ -70,7 +70,7 @@ Each row shows an **eye** button (jump to the module and open it), the **directi
 | Entity | Footprint | Role |
 |---|---|---|
 | Smart Train Combinator | 2×2 | Single-resource brain (Mode 1) |
-| Smart Train Combinator (Multi-Resource) | 2×2 | FIFO dispatcher (Modes 2 & 3) |
+| Smart Train Combinator (Multi-Resource) | 2×2 | Demand-driven dispatcher (Modes 2 & 3) |
 | Freight Bay Probe | 1×2 | Passive, one per wagon (shared buffer) |
 | Typed Freight Bay Probe | 1×2 | Passive, one per wagon, pinned to a resource (independent buffer) |
 
