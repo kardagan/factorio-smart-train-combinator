@@ -3281,6 +3281,24 @@ script.on_event(defines.events.script_raised_destroy,  on_removed)
 script.on_init(ensure_storage)
 script.on_configuration_changed(migrate_all)
 
+-- A deleted player's GUI preferences would otherwise sit in the save forever.
+-- Only on_player_removed ("behaves like the player never existed"), NEVER
+-- on_player_left_game: a player who merely disconnects must find their windows and
+-- their stacks/units choice as they left them. storage.typed is keyed by probe
+-- unit_number, not by player, so it is deliberately absent from this list.
+script.on_event(defines.events.on_player_removed, function(event)
+  ensure_storage()
+  local pi = event.player_index
+  for _, t in pairs({
+    storage.guis, storage.monitor_pref, storage.mon_unit, storage.mon_fold,
+    storage.hist_fold, storage.stopcfg_pref, storage.netcfg_pref,
+    storage.typed_guis, storage.overview_guis, storage.overview_filters,
+    storage.overview_sig,
+  }) do
+    t[pi] = nil
+  end
+end)
+
 -- ===========================================================================
 -- Blueprint: write each main's config into its blueprint entity tags so it can
 -- be restored on build (read back in on_built via event.tags).
