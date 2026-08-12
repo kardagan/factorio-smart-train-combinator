@@ -1,4 +1,12 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.9.1
+Date: 2026-08-12
+  Bugfixes:
+    - The overview no longer reopens with a resource filter you cannot see or clear: the picker
+      only exists once a Type is chosen, so a leftover resource filter narrowed the list with no
+      visible control to clear it. Its filters now start from "show everything" on every open.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.9.0
 Date: 2026-08-11
   Features:

@@ -162,7 +162,6 @@ local function ensure_storage()
   storage.netcfg_pref  = storage.netcfg_pref  or {}  -- player_index -> bool: show circuit-condition window
   storage.typed      = storage.typed      or {}  -- typed-probe unit_number -> { name, quality } (pinned resource)
   storage.typed_guis = storage.typed_guis or {}  -- player_index -> typed-probe unit_number (its window open)
-  storage.win_loc = storage.win_loc or {}  -- player_index -> { [window_name] = {x,y} }: remembered positions
   storage.overview_guis    = storage.overview_guis    or {}  -- player_index -> true when the overview screen is open
   storage.overview_filters = storage.overview_filters or {}  -- player_index -> { type, resource, direction, storage }
   storage.overview_sig     = storage.overview_sig     or {}  -- player_index -> signature of the rows last built (rebuild vs update)
@@ -257,6 +256,10 @@ end
 local function migrate_all()
   ensure_storage()
   for _, state in pairs(storage.mains) do migrate_state(state) end
+  -- Dropped features: the side panels are glued to the base window, so remembered
+  -- positions became dead weight. Overview filters are no longer persisted.
+  storage.win_loc = nil
+  storage.overview_filters = {}
 end
 
 -- Config fields persisted through blueprints / copy-paste (everything the player
@@ -2302,6 +2305,10 @@ local function ov_filters(pi)
     f = { type = "all", resource = nil, direction = "all", storage = "all" }
     storage.overview_filters[pi] = f
   end
+  -- Invariant: the resource picker only exists once a Type is chosen, so a resource
+  -- filter with Type=all would silently narrow the list with no visible control to
+  -- clear it. Drop it rather than filter on something invisible.
+  if f.resource and f.type ~= "item" and f.type ~= "fluid" then f.resource = nil end
   return f
 end
 
@@ -2688,6 +2695,11 @@ end
 local function close_overview(player)
   storage.overview_guis[player.index] = nil
   storage.overview_sig[player.index] = nil  -- next open rebuilds from scratch
+  -- Filters are deliberately NOT remembered. Restoring them could resurrect a
+  -- resource filter whose picker is hidden (the picker only exists once a Type is
+  -- chosen), leaving the list filtered on something the player can neither see nor
+  -- clear. Reopening always starts from "show everything", which is predictable.
+  storage.overview_filters[player.index] = nil
   destroy_win(player, OVERVIEW)
 end
 
