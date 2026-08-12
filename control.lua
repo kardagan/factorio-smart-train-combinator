@@ -442,29 +442,37 @@ function BUF.of_probe(state, probe)
   return out
 end
 
--- How many probes of `list` each buffer entity is wired to. A chest shared by two
--- probes is one physical chest serving two wagons, so each may only count HALF of
--- it -- otherwise the same slots are promised twice and the module calls trains
--- for room that does not exist.
-function BUF.share(state, list)
-  local share = {}
+-- Walk every probe's input network ONCE and keep both things the evaluators need:
+-- the buffer list per probe, and how many probes each buffer is wired to. Walking
+-- the network is the expensive part (a BFS per probe, on every pass), so it must
+-- not be repeated to answer the second question.
+--
+-- The share matters because a chest wired to two probes is one physical chest
+-- serving two wagons: each may only count its fraction, or the same slots are
+-- promised twice and the module calls trains for room that does not exist.
+function BUF.scan(state, list)
+  local scan = { buffers = {}, share = {} }
   for _, probe in pairs(list or {}) do
     if probe.valid then
-      for _, e in pairs(BUF.of_probe(state, probe)) do
-        share[e.unit_number] = (share[e.unit_number] or 0) + 1
+      local bufs = BUF.of_probe(state, probe)
+      scan.buffers[probe.unit_number] = bufs
+      for _, e in pairs(bufs) do
+        scan.share[e.unit_number] = (scan.share[e.unit_number] or 0) + 1
       end
     end
   end
-  return share
+  return scan
 end
 
 -- Total buffer SLOTS wired to a probe's input (items), or total tank fluid
 -- capacity (fluids). Computed once per probe; per-good capacity is then
 -- slots * stack_size(good) for items, or this value directly for fluids.
--- `share` (optional) divides each buffer by the number of probes sharing it.
-function BUF.units(state, probe, share)
+-- `scan` (optional) supplies the pre-walked buffer list and divides each buffer by
+-- the number of probes sharing it.
+function BUF.units(state, probe, scan)
   local units = 0
-  for _, e in pairs(BUF.of_probe(state, probe)) do
+  local bufs = scan and scan.buffers[probe.unit_number] or BUF.of_probe(state, probe)
+  for _, e in pairs(bufs) do
     local u
     if state.kind == KIND.FLUID then
       u = e.prototype.get_fluid_capacity(e.quality)
@@ -483,7 +491,7 @@ function BUF.units(state, probe, share)
         u = e.prototype.get_inventory_size(defines.inventory.chest, e.quality)
       end
     end
-    local k = share and share[e.unit_number] or 1
+    local k = scan and scan.share[e.unit_number] or 1
     if k and k > 1 then u = u / k end
     units = units + u
   end
@@ -511,9 +519,9 @@ end
 
 -- Stored + buffer capacity of one probe for a given good (capacity in that
 -- good's units). Generalises the old read_probe to an arbitrary good.
-local function read_probe_good(state, probe, icon, share)
+local function read_probe_good(state, probe, icon, scan)
   local stored = probe_stored(state, probe, icon)
-  local units  = BUF.units(state, probe, share)
+  local units  = BUF.units(state, probe, scan)
   local capacity
   if state.kind == KIND.FLUID then
     capacity = units
@@ -524,8 +532,8 @@ local function read_probe_good(state, probe, icon, share)
   return stored, capacity
 end
 
-local function read_probe(state, probe, share)
-  return read_probe_good(state, probe, state.icon, share)
+local function read_probe(state, probe, scan)
+  return read_probe_good(state, probe, state.icon, scan)
 end
 
 --- Evaluate every wagon. Returns { cap, rows = { {stored,capacity,loads} }, bottleneck_idx, raw }.
@@ -535,12 +543,12 @@ local function evaluate(state)
   local stored_total, cap_total = 0, 0
   -- One chest wired to two bay probes is one chest serving two wagons: each bay
   -- owns half of it, or both would count the same slots as their own.
-  local share = BUF.share(state, state.probes)
+  local scan = BUF.scan(state, state.probes)
   local i = 0
   for _, probe in pairs(state.probes) do
     if probe.valid then
       i = i + 1
-      local stored, capacity = read_probe(state, probe, share)
+      local stored, capacity = read_probe(state, probe, scan)
       local loads = 0
       if cap and cap > 0 then
         if state.direction == DIRECTION.LOAD then
@@ -575,11 +583,11 @@ local function evaluate_multi(state)
 
   -- A chest wired to two bay probes serves two wagons, so each bay owns only its
   -- fraction of it.
-  local share = BUF.share(state, state.probes)
+  local scan = BUF.scan(state, state.probes)
   local probe_units = {}
   for _, probe in pairs(state.probes) do
     if probe.valid then
-      probe_units[#probe_units + 1] = { probe = probe, units = BUF.units(state, probe, share) }
+      probe_units[#probe_units + 1] = { probe = probe, units = BUF.units(state, probe, scan) }
     end
   end
   local nprobes = #probe_units
@@ -650,8 +658,8 @@ end
 -- === Typed-probe evaluation (independent buffer) ===========================
 -- Each typed probe pins ONE resource. Per resource: its wagons are its typed
 -- probes (so train length varies per resource), each a FULL wagon (no ÷M). The
--- goods list is DERIVED from the wired typed probes (sorted by name for a stable
--- FIFO order).
+-- goods list is DERIVED from the wired typed probes (sorted by name so the good
+-- indices stay stable across passes).
 local function evaluate_typed(state)
   local groups, order = {}, {}
   local main_fluid = (state.kind == KIND.FLUID)
@@ -676,7 +684,7 @@ local function evaluate_typed(state)
   -- Counted over EVERY wired typed probe, not just one resource's: the case this
   -- guards against is one chest wired to both the iron probe and the coal probe.
   -- Each then owns half of it, so the shared slots are not promised twice.
-  local share = BUF.share(state, state.typed_probes)
+  local scan = BUF.scan(state, state.typed_probes)
 
   local per_good = {}
   for gi, name in ipairs(order) do
@@ -688,7 +696,7 @@ local function evaluate_typed(state)
     local stored_total, cap_total = 0, 0
     for wi, probe in ipairs(g.probes) do
       local stored   = probe_stored(state, probe, icon)
-      local units    = BUF.units(state, probe, share)
+      local units    = BUF.units(state, probe, scan)
       local capacity = (state.kind == KIND.FLUID) and units or (item and units * item.stack_size or 0)
       local loads = 0
       if cap and cap > 0 then

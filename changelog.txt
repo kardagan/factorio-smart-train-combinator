@@ -5,6 +5,8 @@ Date: 2026-08-12
     - The overview no longer reopens with a resource filter you cannot see or clear: the picker
       only exists once a Type is chosen, so a leftover resource filter narrowed the list with no
       visible control to clear it. Its filters now start from "show everything" on every open.
+    - The circuit network is walked once per probe again, instead of twice: 1.9.0 read it a second
+      time to work out which chests were shared between probes. Halves that cost on a large base.
 
 ---------------------------------------------------------------------------------------------------
 Version: 1.9.0
