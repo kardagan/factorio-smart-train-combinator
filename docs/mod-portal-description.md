@@ -29,6 +29,10 @@ The **Smart Train Combinator** tracks one item/fluid. Place one **Freight Bay Pr
 
 ![Mode 1 — single resource](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/mode1-single.png)
 
+**Example blueprint** — One main combinator, two generic probes — one per wagon. Each probe is wired to its own six chests, and only to those: that isolation is the whole point. The main calls a train only once *both* probes report a full wagon's worth.
+
+➡ **[Copy the blueprint string](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/blueprints/mode1.txt)** (the page holds nothing but the string — select all, copy, paste in game)
+
 ### Mode 2 — Multi-resource, shared buffer
 
 The **Multi-Resource** combinator with the generic **Freight Bay Probes**: several resources share the same buffer bays. Pick up to 10 resources; the module renames the stop to request **one at a time**, always the **emptiest buffer** first, and holds that choice while a train is on its way. Each train is mono-resource, so a train is only called when a **full wagon** of that resource is available (and, when unloading, only when the shared bay has room for a full wagon — all resources counted). Because generic probes can't be pinned to a resource, each resource is credited with its **share** of the shared bay (slots ÷ number of tracked resources).
@@ -36,6 +40,10 @@ The **Multi-Resource** combinator with the generic **Freight Bay Probes**: sever
 Best for **2–3 resources** with generously-sized chests. Auto-naming is mandatory (it's what routes the trains); the train limit is 0 or 1.
 
 ![Mode 2 — shared buffer](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/mode2-shared.png)
+
+**Example blueprint** — Same two generic probes, but the brain is the **Multi-Resource** combinator. The probes still read the same shared chests; the module picks one resource at a time and renames the stop accordingly, so a single station serves several resources.
+
+➡ **[Copy the blueprint string](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/blueprints/mode2.txt)** (the page holds nothing but the string — select all, copy, paste in game)
 
 ### Mode 3 — Multi-resource, one buffer per resource (typed probes)
 
@@ -46,6 +54,10 @@ Best for **many resources**, and the way to do **multiple fluids** (each fluid g
 ![Mode 3 — typed probes, items](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/mode3-typed.png)
 
 ![Mode 3 — typed probes, fluids](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/mode3-fluids.png)
+
+**Example blueprint** — Three **typed** probes, each pinned to its own resource and its own chests — so each resource has an independent buffer and its own train length. This one is lifted from a working base, so it comes with the surrounding belts and power; delete what you don't need, the wiring is what matters.
+
+➡ **[Copy the blueprint string](https://raw.githubusercontent.com/kardagan/factorio-smart-train-combinator/main/docs/blueprints/mode3.txt)** (the page holds nothing but the string — select all, copy, paste in game)
 
 ## Shared features
 
