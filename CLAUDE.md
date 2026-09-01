@@ -83,6 +83,18 @@ symlink fonctionne.
   Pas de bug introduit puis corrigé dans la même session non publiée.
 - Cibles : `package`, `link`, `unlink`, `install`, `clean`.
 
+### Changelog : validation OBLIGATOIRE par Geoffrey
+
+- **Tout ajout ou modification de `changelog.txt` passe par lui.** On ne
+  commite/livre JAMAIS un changelog qu'il n'a pas validé.
+- Le fichier reste **en ANGLAIS**. Pour la relecture, en fournir la **traduction
+  française** dans la conversation (la traduction ne va PAS dans le fichier).
+- **Ne JAMAIS retoucher une entrée déjà PUBLIÉE** : une version livrée est figée, tout
+  nouveau texte va dans une entrée neuve. En cas de doute sur ce qui est publié,
+  comparer avec `git show HEAD:changelog.txt`.
+- Bump de version : le proposer, pas le décider — c'est lui qui dit si on est en patch,
+  minor ou major.
+
 ## Git
 
 Repo perso GitHub `kardagan`, commits directs sur `main` (branches de feature
