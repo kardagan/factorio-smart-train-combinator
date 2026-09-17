@@ -1,4 +1,16 @@
 ---------------------------------------------------------------------------------------------------
+Version: 1.9.2
+Date: 2026-09-16
+  Compatibility:
+    - Pyanodon support. The technology no longer keeps its vanilla cost when a Py pack is installed:
+      Py rewires the rail and combinator branches, so asking for a chemical science pack gated the
+      module behind a branch Py deliberately moved off this path. It now follows automated rail
+      transportation and advanced combinators, for 250 x automation + py science pack 1. Falls back
+      to automation + logistic when pyalienlife is absent, since that pack comes from it.
+    - The main and multi modules take 5 solder when pyrawores is installed, matching what Py adds to
+      the selector combinator at the same tier. The probes are passive shells and are left alone.
+
+---------------------------------------------------------------------------------------------------
 Version: 1.9.1
 Date: 2026-08-12
   Bugfixes:

@@ -355,6 +355,53 @@ data:extend({
 })
 
 -- ---------------------------------------------------------------------------
+-- Pyanodon compatibility (data phase).
+--
+-- Py rewires the rail and combinator branches, so the vanilla prerequisites and
+-- unit leave this technology hanging at the wrong depth with packs its whole
+-- neighbourhood no longer needs:
+--   * automated-rail-transportation loses its logistic pack (pycoalprocessing
+--     base-updates.lua) -> 200 x automation alone.
+--   * advanced-combinators drops chemical for py-science-pack-1 and keeps only
+--     circuit-network as a prerequisite.
+-- Asking for a chemical pack here would gate the module behind a branch Py
+-- deliberately moved off this path, hence the realignment on py-science-pack-1.
+--
+-- Keyed off pycoalprocessing: it is the base mod every Py pack pulls in, and it
+-- is the one that performs the combinator rewiring we align to. The science pack
+-- itself is guarded separately - see below.
+-- ---------------------------------------------------------------------------
+if mods["pycoalprocessing"] then
+  local tech = data.raw.technology[MAIN]
+  tech.prerequisites = { "automated-rail-transportation", "advanced-combinators" }
+  -- py-science-pack-1 vient de pyalienlife, pas du socle : sans lui (PyCoalTBA
+  -- seul) la techno réclamerait un pack inexistant et planterait au chargement.
+  -- Même garde que Py sur advanced-combinators (base-updates.lua).
+  tech.unit = {
+    count = 250,
+    ingredients = mods["pyalienlife"] and {
+      { "automation-science-pack", 1 },
+      { "py-science-pack-1",       1 },
+    } or {
+      { "automation-science-pack", 1 },
+      { "logistic-science-pack",   1 },
+    },
+    time = 45,
+  }
+
+  -- Solder marks "this assembles electronic components" across Py. The vanilla
+  -- combinators carry none; the selector-combinator - the tier this module sits
+  -- at - gets 5 (pycoalprocessing base-updates.lua). Probes are passive shells,
+  -- so they stay untouched. Guarded on pyrawores, which introduces the item.
+  if mods["pyrawores"] then
+    for _, name in ipairs({ MAIN, MULTI }) do
+      table.insert(data.raw.recipe[name].ingredients,
+        { type = "item", name = "solder", amount = 5 })
+    end
+  end
+end
+
+-- ---------------------------------------------------------------------------
 -- Nullius compatibility (data phase).
 --
 -- Nullius's hidden.lua (data-updates) hides every prototype whose *name* OR
