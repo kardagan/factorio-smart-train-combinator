@@ -49,12 +49,8 @@ son propre budget de 200.
    Utilise `not not (...)` quand la source peut être nil (préférence joueur non
    initialisée, champ de table absent).
 
-Il faut donc un **chargement en jeu** : `./build.sh link` puis recharger la partie.
-Garder la console Factorio ouverte, les crashs runtime n'y apparaissent qu'à
-l'exécution.
-
-Pour un contrôle syntaxique rapide sans binaire `lua` sur la machine, on charge
-`liblua5.4.so.0` via ctypes Python et on appelle `luaL_loadstring`.
+D'où la règle du socle : chargement en jeu obligatoire avant de livrer
+(`./build.sh link`, console Factorio ouverte).
 
 ## Styles GUI : data stage obligatoire
 
@@ -71,35 +67,9 @@ symlink fonctionne.
 
 ## Release
 
-À chaque fix/feature : bumper `info.json`, ajouter une entrée en tête de
-`changelog.txt`, puis `./build.sh package`.
+Le numéro de version vit dans **`info.json`**. **Un seul zip** depuis la 1.8.0
+(canal 2.1 unique ; le double canal 2.0/2.1 est abandonné, donc plus de décalage de
+MINOR). Cibles : `package`, `link`, `unlink`, `install`, `clean`.
 
-- **Un seul zip** depuis la 1.8.0 (canal 2.1 unique ; le double canal 2.0/2.1 est
-  abandonné, donc plus de décalage de MINOR).
-- Le changelog est en **anglais**, format Factorio strict : séparateur de 99 tirets,
-  `Version:` / `Date:`, sections `Features:` / `Changes:` / `Bugfixes:`, items en
-  `    - ` et continuations en 6 espaces.
-- Rester **concis** : décrire ce que le joueur constate, pas le cheminement interne.
-  Pas de bug introduit puis corrigé dans la même session non publiée.
-- Cibles : `package`, `link`, `unlink`, `install`, `clean`.
-
-### Changelog : validation OBLIGATOIRE par Geoffrey
-
-- **Tout ajout ou modification de `changelog.txt` passe par lui.** On ne
-  commite/livre JAMAIS un changelog qu'il n'a pas validé.
-- Le fichier reste **en ANGLAIS**. Pour la relecture, en fournir la **traduction
-  française** dans la conversation (la traduction ne va PAS dans le fichier).
-- **Ne JAMAIS retoucher une entrée déjà PUBLIÉE** : une version livrée est figée, tout
-  nouveau texte va dans une entrée neuve. En cas de doute sur ce qui est publié,
-  comparer avec `git show HEAD:changelog.txt`.
-- Bump de version : le proposer, pas le décider — c'est lui qui dit si on est en patch,
-  minor ou major.
-
-## Git
-
-Repo perso GitHub `kardagan`, commits directs sur `main` (branches de feature
-réservées aux gros chantiers). Identité locale déjà configurée en
-`kardagan / 4290404+kardagan@users.noreply.github.com` — ne pas toucher à
-l'identité globale, qui est celle du travail.
-
-Jamais de trailer `Co-Authored-By`.
+Le reste — format du changelog, validation obligatoire par Geoffrey, entrées
+publiées figées, règle du bump — est dans le socle `~/perso/factoto/CLAUDE.md`.
